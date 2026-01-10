@@ -12,7 +12,7 @@ from typing import Any, Dict, List, Mapping, Tuple
 # 添加项目路径
 sys.path.insert(0, str(Path(__file__).parent))
 
-from pipeline.stage1_preprocess import stage1_preprocess
+from pipeline.stage1_preprocess_single import stage1_preprocess_single as stage1_preprocess
 from pipeline.stage2_ai_inference import stage2_ai_inference
 from pipeline.stage3_postprocess import stage3_postprocess
 from pipeline.stage4_depth_layering import stage4_depth_layering
