@@ -19,6 +19,7 @@ ENV/
 *.swp
 *.swo
 *~
+*.jpg
 
 # Output directories
 output/
@@ -40,3 +41,4 @@ models/
 input/*.jpg
 input/*.png
 !input/.gitkeep
+data/

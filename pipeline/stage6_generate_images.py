@@ -2,6 +2,7 @@
 
 阶段6: 生成20张图片
 功能: 生成所有输出图片（20张）
+使用纯numpy操作，无需GPU（LUT查表和boolean masking在CPU上更快）
 """
 
 from __future__ import annotations
@@ -106,16 +107,11 @@ def _validate_inputs(
     for name, mask in (('foreground_mask', fg_mask), ('middleground_mask', mg_mask), ('background_mask', bg_mask)):
         if mask.shape != (H, W):
             raise ValueError(f"{name} 尺寸必须为 (H,W)，当前 shape={mask.shape}")
-        if mask.dtype != np.bool_ and mask.dtype != bool:
-            # 允许 0/1 的 uint8 传入，但会转 bool
-            pass
 
 
 def _colorize_semantic(semantic_map: np.ndarray, colors: Mapping[int, Any] | None, *, oneformer: bool = False) -> np.ndarray:
     H, W = semantic_map.shape
-    colored = np.zeros((H, W, 3), dtype=np.uint8)
 
-    # Fallback palette used for any unmapped ids.
     palette = [
         (255, 200, 150),
         (100, 255, 100),
@@ -127,17 +123,12 @@ def _colorize_semantic(semantic_map: np.ndarray, colors: Mapping[int, Any] | Non
 
     max_id = int(semantic_map.max())
     if colors is None:
-        # 简易默认调色板：0=黑，其他=循环色
-        # LangSAM convention: 0 is background -> keep black
-        # OneFormer ADE20K convention: 0 is a valid class (e.g. 'wall') -> don't force black
         colors_full: Dict[int, Any] = ({0: (0, 0, 0)} if not oneformer else {})
         start = 1 if not oneformer else 0
         for class_id in range(start, max_id + 1):
             colors_full[class_id] = palette[(class_id - start) % len(palette)]
         colors = colors_full
     else:
-        # If user provides partial mapping (e.g., only some ADE20K ids), fill the rest
-        # so the semantic visualization is not black for valid ids.
         colors_full = {int(k): v for k, v in dict(colors).items()}
         if not oneformer:
             colors_full.setdefault(0, (0, 0, 0))
@@ -146,12 +137,13 @@ def _colorize_semantic(semantic_map: np.ndarray, colors: Mapping[int, Any] | Non
                 colors_full[class_id] = palette[(class_id - 1) % len(palette)]
         colors = colors_full
 
+    # numpy LUT查表 (比GPU传输+查表更快)
+    color_lut = np.zeros((256, 3), dtype=np.uint8)
     for class_id, bgr in colors.items():
-        mask = semantic_map == int(class_id)
-        if not mask.any():
-            continue
-        colored[mask] = np.array(bgr, dtype=np.uint8)
+        if 0 <= class_id < 256:
+            color_lut[class_id] = np.array(bgr, dtype=np.uint8)
 
+    colored = color_lut[semantic_map]
     return colored
 
 
@@ -161,7 +153,6 @@ def _colorize_depth(depth_map: np.ndarray, colormap: str = 'INFERNO') -> np.ndar
         return cv2.applyColorMap(depth_map, cv2.COLORMAP_JET)
     if cmap == 'VIRIDIS':
         return cv2.applyColorMap(depth_map, cv2.COLORMAP_VIRIDIS)
-    # 默认 INFERNO
     return cv2.applyColorMap(depth_map, cv2.COLORMAP_INFERNO)
 
 
@@ -186,7 +177,6 @@ def _create_mask_images(fg_mask: np.ndarray, mg_mask: np.ndarray, bg_mask: np.nd
     mg = (mg_mask.astype(bool) * 255).astype(np.uint8)
     bg = (bg_mask.astype(bool) * 255).astype(np.uint8)
 
-    # 为了与 stage6 输出“每张图都是 (H,W,3) BGR”保持一致，这里转 BGR
     return {
         'foreground_map': cv2.cvtColor(fg, cv2.COLOR_GRAY2BGR),
         'middleground_map': cv2.cvtColor(mg, cv2.COLOR_GRAY2BGR),
@@ -210,8 +200,6 @@ def _generate_layered_images(
     mg_mask: np.ndarray,
     bg_mask: np.ndarray,
 ) -> Dict[str, np.ndarray]:
-    results: Dict[str, np.ndarray] = {}
-
     base_images = {
         'semantic': semantic_colored,
         'depth': depth_colored,
@@ -224,6 +212,8 @@ def _generate_layered_images(
         'background': bg_mask.astype(bool),
     }
 
+    # 纯numpy路径: boolean indexing 在V-cache CPU上非常快
+    results: Dict[str, np.ndarray] = {}
     for base_name, base_img in base_images.items():
         for mask_name, m in masks.items():
             results[f"{base_name}_{mask_name}"] = _apply_mask_to_image(base_img, m)
@@ -253,5 +243,3 @@ def _validate_output_images(images: Dict[str, np.ndarray]) -> None:
             raise ValueError(f"输出图片 {name} 必须是 (H,W,3)，当前 shape={img.shape}")
         if img.dtype != np.uint8:
             raise ValueError(f"输出图片 {name} 必须是 uint8，当前 dtype={img.dtype}")
-
-

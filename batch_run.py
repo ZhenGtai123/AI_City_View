@@ -1,9 +1,14 @@
 """
 批量处理全景图（支持多线程）
 对input文件夹中的每张全景图：
-1. 自动裁剪并分割为前后两张图
-2. 对每张图分别运行完整的pipeline
-3. 支持多线程并行处理提升速度
+1. 自动裁剪为三个视角 (left/front/right)，每个90° FOV
+2. 对每个视角分别运行完整的pipeline
+3. 每张全景图内部3个视角已自动流水线并行(GPU/CPU重叠)
+4. --workers控制同时处理几张全景图
+
+推荐参数 (7800X3D + 4070):
+  --workers=2  批量处理最佳（6个视角线程，GPU持续满载，CPU ~6核）
+  --workers=1  单张处理默认（3个视角线程，GPU/CPU流水线）
 """
 
 import sys
@@ -122,7 +127,8 @@ if __name__ == '__main__':
     parser.add_argument('input', type=str, help='输入文件夹路径')
     parser.add_argument('output', type=str, help='输出根目录')
     parser.add_argument('--limit', type=int, default=0, help='限制处理图片数量（0=全部）')
-    parser.add_argument('--workers', type=int, default=1, help='并行worker数量（默认1=单线程）')
+    parser.add_argument('--workers', type=int, default=1,
+                        help='同时处理几张全景图（默认1，推荐2用于批量处理）')
     
     args = parser.parse_args()
     

@@ -2,6 +2,7 @@
 
 阶段5: 开放度计算
 功能: 基于语义类别计算开放度图
+使用numpy LUT查表，无需GPU
 """
 
 from __future__ import annotations
@@ -25,15 +26,9 @@ def stage5_openness(semantic_map: np.ndarray, config: Dict[str, Any]) -> Dict[st
     classes: List[str] = list(config.get('classes', []) or [])
     openness_config: List[int] = list(config.get('openness_config', []) or [])
 
-    # 允许 ADE20K 等“多类语义图”场景：openness_config/classes 可以只配置一部分。
-    # 未指定的 class_id 默认视为封闭(0)。
     max_id = int(semantic_map.max())
-    needed_len = max(0, max_id + 1)  # 语义图可能包含 0..max_id
+    needed_len = max(0, max_id + 1)
 
-    # Common convention:
-    # - LangSAM produces ids: 0=background, 1..N correspond to `classes` prompts
-    # In that case, openness_config is usually length N+1, while classes is length N.
-    # For reporting, build a name list aligned to ids.
     names_by_id: List[str]
     if len(openness_config) == len(classes) + 1:
         names_by_id = ['background'] + classes
@@ -42,7 +37,6 @@ def stage5_openness(semantic_map: np.ndarray, config: Dict[str, Any]) -> Dict[st
     if len(openness_config) < needed_len:
         openness_config = openness_config + [0] * (needed_len - len(openness_config))
     if len(names_by_id) < needed_len:
-        # names_by_id 仅用于统计展示；不足时用占位名补齐
         names_by_id = names_by_id + [f"class_{i}" for i in range(len(names_by_id), needed_len)]
 
     for idx, value in enumerate(openness_config):
@@ -51,17 +45,16 @@ def stage5_openness(semantic_map: np.ndarray, config: Dict[str, Any]) -> Dict[st
 
     H, W = semantic_map.shape
     total_pixels = int(H * W)
-    openness_map = np.zeros((H, W), dtype=np.uint8)
 
-    # 逐类映射：支持 0..max_id
+    # numpy LUT查表 (比GPU传输+查表更快，数据全在L3 cache中)
+    openness_lut = np.array(openness_config, dtype=np.uint8) * 255
+    openness_map = openness_lut[semantic_map]
+
+    # 统计信息
     by_class: Dict[str, Any] = {}
     for class_id in range(0, max_id + 1):
-        class_pixels = semantic_map == class_id
-        class_count = int(class_pixels.sum())
+        class_count = int(np.sum(semantic_map == class_id))
         is_open = int(openness_config[class_id])
-
-        if is_open == 1:
-            openness_map[class_pixels] = 255
 
         if class_count > 0:
             by_class[names_by_id[class_id]] = {
@@ -85,5 +78,3 @@ def stage5_openness(semantic_map: np.ndarray, config: Dict[str, Any]) -> Dict[st
             'by_class': by_class,
         },
     }
-
-

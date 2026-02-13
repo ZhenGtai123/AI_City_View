@@ -22,34 +22,34 @@ except ImportError:
     print("警告: PyTorch未安装，AI推理功能将不可用")
 
 
-_LANGSAM_PREDICT_LOCK = threading.Lock()
-_ONEFORMER_LOCK = threading.Lock()
+# 全局GPU推理锁: 只包裹torch推理代码块，CPU预处理/后处理不持锁
+_GPU_INFERENCE_LOCK = threading.Lock()
 
 
 def stage2_ai_inference(image: np.ndarray, config: Dict[str, Any]) -> Dict[str, Any]:
     """
     阶段2: AI模型推理
-    
+
     参数:
         image: np.ndarray - 来自阶段1的 original (H, W, 3) BGR格式
         config: dict - 配置参数
-            - classes: List[str] - 语义类别列表
-            - encoder: str - 模型大小 ('vitb' 或 'vits')
-            - class_colors: Dict[int, List[int]] - 类别颜色映射
-    
+
     返回:
         dict - 包含以下键:
-            - semantic_map: np.ndarray - 语义分割图 (H, W) uint8
+            - semantic_map: np.ndarray - 语义分割图 (H, W) uint8 (若禁用则全0)
             - depth_map: np.ndarray - 深度图 (H, W) uint8
     """
     H, W = image.shape[:2]
-    
-    # 语义分割 (SAM 2.1 + LangSAM)
-    semantic_map = _semantic_segmentation(image, config)
-    
-    # 深度估计 (Depth Anything V2)
+
+    # 语义分割（可禁用，DA3 NESTED 已内置天空分割）
+    if config.get('enable_semantic', True):
+        semantic_map = _semantic_segmentation(image, config)
+    else:
+        semantic_map = np.zeros((H, W), dtype=np.uint8)
+
+    # 深度估计
     depth_map = _depth_estimation(image, config)
-    
+
     return {
         'semantic_map': semantic_map,
         'depth_map': depth_map
@@ -98,17 +98,17 @@ def _semantic_segmentation(image: np.ndarray, config: Dict[str, Any]) -> np.ndar
 
             # OneFormer semantic segmentation
             t1 = time.perf_counter()
-            with torch.inference_mode():
-                inputs = processor(images=rgb, task_inputs=["semantic"], return_tensors="pt")
-                inputs = {k: v.to(device) for k, v in inputs.items()}
-                if use_fp16 and device.type == 'cuda':
-                    inputs = {k: v.half() if torch.is_floating_point(v) else v for k, v in inputs.items()}
-                outputs = model(**inputs)
-                pred = processor.post_process_semantic_segmentation(outputs, target_sizes=[(H, W)])[0]
+            with _GPU_INFERENCE_LOCK:
+                with torch.inference_mode():
+                    inputs = processor(images=rgb, task_inputs=["semantic"], return_tensors="pt")
+                    inputs = {k: v.to(device) for k, v in inputs.items()}
+                    if use_fp16 and device.type == 'cuda':
+                        inputs = {k: v.half() if torch.is_floating_point(v) else v for k, v in inputs.items()}
+                    outputs = model(**inputs)
+                    pred = processor.post_process_semantic_segmentation(outputs, target_sizes=[(H, W)])[0]
+                semantic_map = pred.detach().to('cpu').numpy().astype(np.uint8)
             if profile:
                 print(f"  ⏱️  OneFormer inference+post: {time.perf_counter() - t1:.3f}s")
-
-            semantic_map = pred.detach().to('cpu').numpy().astype(np.uint8)
             return semantic_map
 
         except Exception as e:
@@ -193,7 +193,7 @@ def _maybe_apply_semantic_items_mapping_for_ade20k(model, config: Dict[str, Any]
     """
     if config.get('_ade20k_mapped_from_semantic_items'):
         return
-    backend = str(config.get('semantic_backend', '')).strip().lower()
+    backend = str(config.get('semantic_backend', 'oneformer_ade20k')).strip().lower()
     if not backend.startswith('oneformer'):
         return
 
@@ -216,7 +216,8 @@ def _maybe_apply_semantic_items_mapping_for_ade20k(model, config: Dict[str, Any]
     for i, lab in enumerate(labels_by_id):
         norm_to_id[_normalize_label(lab)] = i
 
-    colors = {0: (0, 0, 0)}
+    # 注意: 不再默认把id=0设为黑色，因为ADE20K中0是wall
+    colors = {}
     openness_config = [0] * (max_id + 1)
 
     for item in items:
@@ -246,7 +247,8 @@ def _maybe_apply_semantic_items_mapping_for_ade20k(model, config: Dict[str, Any]
             if len(hits) == 1:
                 matched_id = int(hits[0])
 
-        if matched_id is None or matched_id <= 0 or matched_id > max_id:
+        # 注意: ADE20K中class 0是wall，所以不能排除matched_id == 0
+        if matched_id is None or matched_id < 0 or matched_id > max_id:
             continue
 
         colors[matched_id] = tuple(int(x) for x in bgr)
@@ -260,16 +262,227 @@ def _maybe_apply_semantic_items_mapping_for_ade20k(model, config: Dict[str, Any]
 
 def _depth_estimation(image: np.ndarray, config: Dict[str, Any]) -> np.ndarray:
     """
-    深度估计 - 使用 Depth Anything V2
-    
+    深度估计 - 支持 Depth Pro, Depth Anything V2/V3
+
     参数:
         image: (H, W, 3) BGR uint8
         config: dict - 配置参数
-    
+            - depth_backend: 'depth_pro', 'v3', 'v2' (默认 'depth_pro')
+            - depth_model_id: 模型ID
+
     返回:
         depth_map: (H, W) uint8, 值范围 [0, 255]
             - 0: 最近（前景）
             - 255: 最远（背景）
+    """
+    H, W = image.shape[:2]
+    depth_backend = str(config.get('depth_backend', 'depth_pro')).lower().strip()
+
+    if depth_backend == 'depth_pro':
+        return _depth_estimation_depth_pro(image, config)
+    elif depth_backend == 'v3':
+        return _depth_estimation_v3(image, config)
+    else:
+        return _depth_estimation_v2(image, config)
+
+
+def _depth_estimation_depth_pro(image: np.ndarray, config: Dict[str, Any]) -> np.ndarray:
+    """
+    深度估计 - 使用 Apple Depth Pro
+    边缘锐利，度量深度精确，适合街景
+    """
+    H, W = image.shape[:2]
+
+    try:
+        profile = bool(config.get('profile', False))
+        t0 = time.perf_counter()
+
+        depth_model, transform = get_depth_model_depth_pro(config)
+        if depth_model is None:
+            print(f"  ⚠️  警告: Depth Pro 未就绪，回退到 Depth Anything V3")
+            return _depth_estimation_v3(image, config)
+
+        if profile:
+            print(f"  ⏱️  Depth Pro model ready: {time.perf_counter() - t0:.3f}s")
+
+        # OpenCV(BGR)->RGB, 然后转PIL
+        rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        pil_img = Image.fromarray(rgb)
+
+        # Depth Pro 推理
+        t1 = time.perf_counter()
+        device = _get_torch_device(config)
+        with _GPU_INFERENCE_LOCK:
+            with torch.inference_mode():
+                # 预处理并移到 GPU
+                image_tensor = transform(pil_img)
+                if device is not None and device.type == 'cuda':
+                    image_tensor = image_tensor.to(device)
+
+                # 推理 - Depth Pro 会自动估计焦距
+                prediction = depth_model.infer(image_tensor, f_px=None)
+                pred = prediction["depth"]  # 度量深度 (米)
+                pred = pred.squeeze().cpu().numpy()
+
+        if profile:
+            print(f"  ⏱️  Depth Pro inference: {time.perf_counter() - t1:.3f}s")
+
+        # 将预测结果 resize 回原图大小
+        t2 = time.perf_counter()
+        if pred.shape != (H, W):
+            pred_resized = cv2.resize(pred, (W, H), interpolation=cv2.INTER_CUBIC)
+        else:
+            pred_resized = pred
+
+        # Depth Pro 输出度量深度: 高值=远景(天空), 低值=近景(地面)
+        # 我们的约定: 0=近景, 255=远景
+        # 所以不需要反转，invert=False
+        depth_map = _normalize_depth_to_uint8(pred_resized, invert=bool(config.get('depth_invert_depth_pro', False)))
+
+        if profile:
+            print(f"  ⏱️  Depth Pro postprocess: {time.perf_counter() - t2:.3f}s")
+
+    except Exception as e:
+        print(f"  ❌ Depth Pro 出错: {e}")
+        import traceback
+        traceback.print_exc()
+        print(f"  ⚠️  回退到 Depth Anything V3...")
+        return _depth_estimation_v3(image, config)
+
+    return depth_map
+
+
+def _depth_estimation_v3(image: np.ndarray, config: Dict[str, Any]) -> np.ndarray:
+    """
+    深度估计 - 使用 Depth Anything V3
+    DA3NESTED 系列内置天空分割，自动将天空设为最大深度
+    """
+    H, W = image.shape[:2]
+
+    try:
+        profile = bool(config.get('profile', False))
+        t0 = time.perf_counter()
+
+        depth_model = get_depth_model_v3(config)
+        if depth_model is None:
+            print(f"  ⚠️  警告: Depth Anything V3 未就绪，回退到 V2")
+            return _depth_estimation_v2(image, config)
+
+        if profile:
+            print(f"  ⏱️  Depth V3 model ready: {time.perf_counter() - t0:.3f}s")
+
+        # 安装 sky mask hook (仅 DA3Nested 模型支持)
+        _install_sky_hook(depth_model)
+
+        # OpenCV(BGR)->RGB, 然后转PIL
+        rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        pil_img = Image.fromarray(rgb)
+
+        # 推理参数
+        process_res = int(config.get('depth_process_res', 672))
+
+        t1 = time.perf_counter()
+        with _GPU_INFERENCE_LOCK:
+            with torch.inference_mode():
+                prediction = depth_model.inference(
+                    [pil_img],
+                    export_dir=None,
+                    export_format='mini_npz',
+                    process_res=process_res,
+                    process_res_method='upper_bound_resize',
+                )
+
+                # prediction.depth: [N, H, W] float32
+                pred = prediction.depth[0]
+                pred = pred.cpu().numpy() if hasattr(pred, 'cpu') else np.array(pred)
+
+        if profile:
+            print(f"  ⏱️  Depth V3 inference: {time.perf_counter() - t1:.3f}s")
+
+        # 以下全部CPU操作，不持GPU锁，其他线程可立即开始GPU推理
+        t2 = time.perf_counter()
+        if pred.shape != (H, W):
+            pred_resized = cv2.resize(pred, (W, H), interpolation=cv2.INTER_CUBIC)
+        else:
+            pred_resized = pred
+
+        # 提取天空掩码 (由 hook 捕获)
+        sky_mask_small = _get_sky_mask(depth_model)
+        sky_mask = None
+        if sky_mask_small is not None:
+            sky_mask = cv2.resize(
+                sky_mask_small.astype(np.uint8), (W, H),
+                interpolation=cv2.INTER_NEAREST,
+            ).astype(bool)
+            sky_pct = sky_mask.sum() / sky_mask.size * 100
+            if profile:
+                print(f"  ⏱️  Sky mask: {sky_pct:.1f}% pixels")
+
+        # V2-Style 视差归一化 (天空自动=255, 对比度增强)
+        depth_map = _normalize_depth_v2style(
+            pred_resized, sky_mask=sky_mask,
+            contrast_boost=float(config.get('depth_contrast_boost', 2.0)),
+        )
+
+        if profile:
+            print(f"  ⏱️  Depth V3 postprocess: {time.perf_counter() - t2:.3f}s")
+
+    except Exception as e:
+        print(f"  ❌ Depth Anything V3 出错: {e}")
+        import traceback
+        traceback.print_exc()
+        print(f"  ⚠️  回退到 Depth Anything V2...")
+        return _depth_estimation_v2(image, config)
+
+    return depth_map
+
+
+def _install_sky_hook(depth_model):
+    """
+    给 DA3Nested 模型安装 hook，捕获 sky mask。
+    DA3Nested._handle_sky_regions 内部计算了天空掩码但没有暴露，
+    我们通过 monkey-patch 把它存下来。
+    """
+    inner_model = getattr(depth_model, 'model', None)
+    if inner_model is None:
+        return
+
+    # 只处理 DA3Nested 类型
+    cls_name = type(inner_model).__name__
+    if 'Nested' not in cls_name:
+        return
+
+    # 如果已经 patch 过就跳过
+    if getattr(inner_model, '_sky_hook_installed', False):
+        return
+
+    original_handle_sky = inner_model._handle_sky_regions
+
+    def _patched_handle_sky(output, metric_output, sky_depth_def=200.0):
+        from depth_anything_3.utils.alignment import compute_sky_mask
+        non_sky_mask = compute_sky_mask(metric_output.sky, threshold=0.3)
+        # 存储天空掩码: True = 天空
+        sky_mask = ~non_sky_mask  # (B, S, H, W) bool tensor
+        inner_model._captured_sky_mask = sky_mask.squeeze().cpu().numpy()
+        return original_handle_sky(output, metric_output, sky_depth_def)
+
+    inner_model._handle_sky_regions = _patched_handle_sky
+    inner_model._sky_hook_installed = True
+    inner_model._captured_sky_mask = None
+
+
+def _get_sky_mask(depth_model) -> np.ndarray | None:
+    """从 hook 中获取天空掩码"""
+    inner_model = getattr(depth_model, 'model', None)
+    if inner_model is None:
+        return None
+    mask = getattr(inner_model, '_captured_sky_mask', None)
+    return mask
+
+
+def _depth_estimation_v2(image: np.ndarray, config: Dict[str, Any]) -> np.ndarray:
+    """
+    深度估计 - 使用 Depth Anything V2 (原有实现)
     """
     H, W = image.shape[:2]
     
@@ -293,28 +506,29 @@ def _depth_estimation(image: np.ndarray, config: Dict[str, Any]) -> np.ndarray:
 
         # 推理
         t1 = time.perf_counter()
-        with torch.inference_mode():
-            inputs = depth_processor(images=rgb, return_tensors='pt')
-            inputs = {k: v.to(device) for k, v in inputs.items()}
-            if use_fp16 and device.type == 'cuda':
-                inputs = {k: v.half() if torch.is_floating_point(v) else v for k, v in inputs.items()}
+        with _GPU_INFERENCE_LOCK:
+            with torch.inference_mode():
+                inputs = depth_processor(images=rgb, return_tensors='pt')
+                inputs = {k: v.to(device) for k, v in inputs.items()}
+                if use_fp16 and device.type == 'cuda':
+                    inputs = {k: v.half() if torch.is_floating_point(v) else v for k, v in inputs.items()}
 
-            outputs = depth_model(**inputs)
+                outputs = depth_model(**inputs)
 
-            # transformers 的深度模型一般有 predicted_depth
-            if hasattr(outputs, 'predicted_depth'):
-                pred = outputs.predicted_depth
-            elif isinstance(outputs, (tuple, list)) and len(outputs) > 0:
-                pred = outputs[0]
-            else:
-                pred = getattr(outputs, 'logits', None)
+                # transformers 的深度模型一般有 predicted_depth
+                if hasattr(outputs, 'predicted_depth'):
+                    pred = outputs.predicted_depth
+                elif isinstance(outputs, (tuple, list)) and len(outputs) > 0:
+                    pred = outputs[0]
+                else:
+                    pred = getattr(outputs, 'logits', None)
 
-            if pred is None:
-                raise RuntimeError("Depth Anything V2 输出不包含 predicted_depth/logits")
+                if pred is None:
+                    raise RuntimeError("Depth Anything V2 输出不包含 predicted_depth/logits")
 
-            # pred: (B, H', W')
-            pred = pred.squeeze(0)
-            pred = pred.detach().float().cpu().numpy()
+                # pred: (B, H', W')
+                pred = pred.squeeze(0)
+                pred = pred.detach().float().cpu().numpy()
 
         if profile:
             print(f"  ⏱️  Depth inference: {time.perf_counter() - t1:.3f}s")
@@ -349,7 +563,7 @@ def _normalize_depth_to_uint8(depth_raw: np.ndarray, invert: bool = True) -> np.
     """把 float 深度/逆深度图归一化到 uint8 [0,255]。
 
     约定输出：0=近，255=远。
-    Depth Anything V2 的输出通常更像“逆深度”（近处更大），因此默认 invert=True。
+    Depth Anything V2 的输出通常更像"逆深度"（近处更大），因此默认 invert=True。
     """
     depth_min = float(np.min(depth_raw))
     depth_max = float(np.max(depth_raw))
@@ -361,6 +575,56 @@ def _normalize_depth_to_uint8(depth_raw: np.ndarray, invert: bool = True) -> np.
     if invert:
         norm = (255 - norm).astype(np.uint8)
     return norm
+
+
+def _normalize_depth_v2style(depth_raw: np.ndarray, sky_mask: np.ndarray | None = None,
+                              contrast_boost: float = 2.0) -> np.ndarray:
+    """V2-Style 视差归一化 (参考 ComfyUI-DepthAnythingV3)。
+
+    纯numpy/cv2实现，避免GPU传输开销。
+    对于<1M像素的图像，numpy在7800X3D V-cache上比GPU+PCIe传输更快。
+
+    流程:
+        1. depth → disparity (1/depth)，天空自然变为~0
+        2. 用 sky_mask 排除天空区域，仅对内容区域归一化
+        3. 百分位裁剪 (1%-99%) 提升对比度
+        4. power transform 增强近景细节
+        5. 天空边缘抗锯齿
+        6. 反转输出使 0=近, 255=远
+
+    返回:
+        depth_map: (H, W) uint8, 0=近, 255=远 (天空=255)
+    """
+    epsilon = 1e-6
+
+    disparity = 1.0 / (depth_raw.astype(np.float64) + epsilon)
+
+    if sky_mask is not None and sky_mask.any():
+        content_mask = (~sky_mask).astype(np.float32)
+    else:
+        content_mask = np.ones_like(disparity, dtype=np.float32)
+
+    content_pixels = disparity[content_mask > 0.5]
+    if content_pixels.size > 100:
+        p1 = np.percentile(content_pixels, 1)
+        p99 = np.percentile(content_pixels, 99)
+        if p99 - p1 < epsilon:
+            p1 = content_pixels.min()
+            p99 = content_pixels.max()
+    else:
+        p1 = disparity.min()
+        p99 = disparity.max()
+
+    disp_norm = (disparity - p1) / (p99 - p1 + epsilon)
+    disp_norm = np.clip(disp_norm, 0.0, 1.0)
+    disp_contrast = np.power(disp_norm, 1.0 / contrast_boost)
+
+    if sky_mask is not None and sky_mask.any():
+        content_smooth = cv2.blur(content_mask, (3, 3))
+        disp_contrast = disp_contrast * content_smooth
+
+    result = 1.0 - disp_contrast
+    return (result * 255.0).clip(0, 255).astype(np.uint8)
 
 
 def _generate_placeholder_semantic_map(semantic_map: np.ndarray, classes: List[str], H: int, W: int) -> None:
@@ -402,6 +666,9 @@ _model_cache = {
     'semantic_device': None,
     'depth_model': None,
     'depth_processor': None,
+    'depth_model_v3': None,  # Depth Anything V3 模型
+    'depth_model_depth_pro': None,  # Apple Depth Pro 模型
+    'depth_transform_depth_pro': None,  # Depth Pro 预处理 transform
 }
 
 
@@ -508,7 +775,7 @@ def _langsam_predict_masks(model, pil_img: Image.Image, text_prompt: str, config
     text_threshold = float(cfg.get('text_threshold', 0.25))
 
     # LangSAM/SAM2 predictor is not thread-safe; serialize predict calls.
-    with _LANGSAM_PREDICT_LOCK:
+    with _GPU_INFERENCE_LOCK:
         # LangSAM.predict expects lists and returns list[dict] (one per image)
         results = model.predict([pil_img], [text_prompt], box_threshold=box_threshold, text_threshold=text_threshold)
     if not results:
@@ -579,6 +846,102 @@ def get_depth_model(config: Dict[str, Any]):
     return _model_cache['depth_model'], _model_cache['depth_processor']
 
 
+def get_depth_model_v3(config: Dict[str, Any]):
+    """
+    获取 Depth Anything V3 模型 (带缓存)
+    """
+    if _model_cache['depth_model_v3'] is None:
+        if not TORCH_AVAILABLE:
+            return None
+
+        try:
+            profile = bool(config.get('profile', False))
+            t_import = time.perf_counter()
+            print("  初始化 Depth Anything V3...")
+            from depth_anything_3.api import DepthAnything3
+            if profile:
+                print(f"  ⏱️  import depth_anything_3: {time.perf_counter() - t_import:.3f}s")
+        except ImportError as e:
+            print(f"  ❌ 无法导入 depth_anything_3: {e}")
+            print(f"  请安装: pip install git+https://github.com/ByteDance-Seed/depth-anything-3.git")
+            return None
+
+        # 支持的模型 (精度从低到高):
+        #   - depth-anything/DA3-BASE       : ViT-B backbone, 快速
+        #   - depth-anything/DA3-LARGE      : ViT-L backbone, 精度更高
+        #   - depth-anything/DA3-GIANT      : ViT-G backbone, 最高精度 (需要更多显存)
+        #   - depth-anything/DA3MONO-LARGE  : 单目深度优化版
+        #   - depth-anything/DA3METRIC-LARGE: 度量深度版本
+        model_id = str(config.get('depth_model_id_v3', 'depth-anything/DA3MONO-LARGE'))
+        device = _get_torch_device(config)
+
+        print(f"  加载 Depth Anything V3: {model_id} (device={device})")
+
+        t_load = time.perf_counter()
+        try:
+            model = DepthAnything3.from_pretrained(model_id)
+            model = model.to(device=device)
+            model.eval()
+        except Exception as e:
+            print(f"  ❌ 加载 Depth Anything V3 失败: {e}")
+            import traceback
+            traceback.print_exc()
+            return None
+            
+        if profile:
+            print(f"  ⏱️  load DA3 model: {time.perf_counter() - t_load:.3f}s")
+
+        _model_cache['depth_model_v3'] = model
+
+    return _model_cache['depth_model_v3']
+
+
+def get_depth_model_depth_pro(config: Dict[str, Any]):
+    """
+    获取 Apple Depth Pro 模型 (带缓存)
+    边缘锐利，度量深度精确，适合街景
+    """
+    if _model_cache['depth_model_depth_pro'] is None:
+        if not TORCH_AVAILABLE:
+            return None, None
+
+        try:
+            profile = bool(config.get('profile', False))
+            t_import = time.perf_counter()
+            print("  初始化 Depth Pro (Apple)...")
+            import depth_pro
+            if profile:
+                print(f"  ⏱️  import depth_pro: {time.perf_counter() - t_import:.3f}s")
+        except ImportError as e:
+            print(f"  ❌ 无法导入 depth_pro: {e}")
+            print(f"  请安装: pip install git+https://github.com/apple/ml-depth-pro.git")
+            print(f"  然后运行: source get_pretrained_models.sh 下载权重")
+            return None, None
+
+        device = _get_torch_device(config)
+
+        print(f"  加载 Depth Pro (device={device})")
+
+        t_load = time.perf_counter()
+        try:
+            model, transform = depth_pro.create_model_and_transforms()
+            model = model.to(device)
+            model.eval()
+        except Exception as e:
+            print(f"  ❌ 加载 Depth Pro 失败: {e}")
+            import traceback
+            traceback.print_exc()
+            return None, None
+
+        if profile:
+            print(f"  ⏱️  load Depth Pro model: {time.perf_counter() - t_load:.3f}s")
+
+        _model_cache['depth_model_depth_pro'] = model
+        _model_cache['depth_transform_depth_pro'] = transform
+
+    return _model_cache['depth_model_depth_pro'], _model_cache['depth_transform_depth_pro']
+
+
 def _get_torch_device(config: Dict[str, Any]):
     if not TORCH_AVAILABLE:
         return None
@@ -597,5 +960,8 @@ def clear_model_cache():
     _model_cache['semantic_device'] = None
     _model_cache['depth_model'] = None
     _model_cache['depth_processor'] = None
+    _model_cache['depth_model_v3'] = None
+    _model_cache['depth_model_depth_pro'] = None
+    _model_cache['depth_transform_depth_pro'] = None
     if TORCH_AVAILABLE and torch.cuda.is_available():
         torch.cuda.empty_cache()
