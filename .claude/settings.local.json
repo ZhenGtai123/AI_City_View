@@ -15,7 +15,9 @@
       "WebFetch(domain:github.com)",
       "Bash(D:/mini-conda/envs/cityview/python.exe:*)",
       "Bash(kill:*)",
-      "Bash(done)"
+      "Bash(done)",
+      "Bash(/d/mini-conda/envs/cityview/python.exe:*)",
+      "Bash(PYTHONIOENCODING=utf-8 /d/mini-conda/envs/cityview/python.exe:*)"
     ]
   }
 }

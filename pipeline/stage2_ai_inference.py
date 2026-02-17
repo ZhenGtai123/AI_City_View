@@ -76,7 +76,11 @@ def stage2_ai_inference(image: np.ndarray, config: Dict[str, Any]) -> Dict[str, 
     if (config.get('sky_refine_gaps', True)
             and sky_mask is not None and sky_mask.any()
             and depth_metric is not None):
-        sky_mask, gap_count = _refine_sky_gaps(depth_metric, sky_mask)
+        sky_mask, gap_count = _refine_sky_gaps(
+            depth_metric, sky_mask,
+            image_bgr=image,
+            semantic_map=semantic_map,
+        )
         if gap_count > 0:
             semantic_map[sky_mask] = 2
             depth_metric[sky_mask] = np.inf
@@ -551,15 +555,18 @@ def _refine_sky_gaps(
     dilate_kernel_size: int = 21,
     dilate_iterations: int = 2,
     max_rounds: int = 5,
+    image_bgr: np.ndarray | None = None,
+    semantic_map: np.ndarray | None = None,
 ) -> tuple:
-    """修补天空缝隙: 树缝/建筑间隙中的天空像素 (迭代扩展)。
+    """修补天空缝隙: 树缝/建筑间隙中的天空像素 (迭代扩展 + 颜色/语义守卫)。
 
-    OneFormer 语义分割对大面积天空检测准确，但树冠缝隙间的小块天空容易漏掉。
-    这些像素在深度图中表现为极远距离，且空间上靠近已知天空区域。
+    保留原有的激进膨胀策略（21px/5轮）以深入树缝，
+    但增加颜色和语义守卫，防止把绿色树冠、暗色物体、建筑等误标为天空。
 
-    迭代策略:
-      每轮: 膨胀当前天空区域 → 找深度极大的邻近像素 → 加入天空
-      逐步向树冠深处扩展，直到没有新像素可加或达到最大轮数。
+    守卫规则:
+      - 排除绿色像素 (H=30-80, S>=40): 树冠/植被
+      - 排除暗色像素 (V<80): 阴影/深色物体
+      - 排除硬性语义类: building, road, car 等永远不应是天空的类别
 
     参数:
         depth_metric: (H, W) float32, 天空=inf
@@ -568,15 +575,40 @@ def _refine_sky_gaps(
         dilate_kernel_size: 膨胀核大小 (默认 21px)
         dilate_iterations: 膨胀迭代次数 (默认 2)
         max_rounds: 最大迭代轮数 (默认 5)
+        image_bgr: (H, W, 3) uint8 BGR原图, 用于颜色守卫
+        semantic_map: (H, W) uint8 ADE20K class ids, 用于语义守卫
 
     返回:
         (refined_sky_mask, total_gap_pixel_count)
     """
+    H, W = depth_metric.shape[:2]
     finite_non_sky = depth_metric[np.isfinite(depth_metric) & ~sky_mask]
     if len(finite_non_sky) < 100:
         return sky_mask, 0
 
     depth_thresh = float(np.percentile(finite_non_sky, depth_percentile))
+
+    # ---- Build guard mask: pixels that should NEVER become sky ----
+    guard = np.zeros((H, W), dtype=bool)
+
+    # Color guard: reject green vegetation and dark pixels
+    if image_bgr is not None and image_bgr.ndim == 3:
+        hsv = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2HSV)
+        h, s, v = hsv[:, :, 0], hsv[:, :, 1], hsv[:, :, 2]
+        green_veg = (h >= 30) & (h <= 80) & (s >= 40)
+        dark = (v < 80)
+        guard |= green_veg | dark
+
+    # Semantic guard: hard classes that are never sky
+    if semantic_map is not None:
+        _NEVER_SKY_IDS = {
+            0, 1, 3, 5, 6, 9, 11, 12, 13, 20,  # wall, building, floor, ceiling, road, grass, sidewalk, person, earth, car
+            33, 53, 72, 80, 83, 90, 116, 127,    # fence, stairs, signboard, truck, bus, van, pole, bicycle
+        }
+        for cls_id in _NEVER_SKY_IDS:
+            guard |= (semantic_map == cls_id)
+
+    # ---- Iterative dilation (same aggressive reach as before) ----
     kernel = cv2.getStructuringElement(
         cv2.MORPH_ELLIPSE, (dilate_kernel_size, dilate_kernel_size))
 
@@ -584,14 +616,18 @@ def _refine_sky_gaps(
     total_added = 0
 
     for _round in range(max_rounds):
-        # 膨胀当前天空区域
         sky_nearby = cv2.dilate(
             current_sky.astype(np.uint8) * 255, kernel,
             iterations=dilate_iterations,
         ) > 0
 
-        # 候选: 深度极大 + 在天空邻域内 + 不是已知天空
-        gap_pixels = (depth_metric > depth_thresh) & sky_nearby & ~current_sky
+        # Same depth + proximity check, but now also reject guarded pixels
+        gap_pixels = (
+            (depth_metric > depth_thresh)
+            & sky_nearby
+            & ~current_sky
+            & ~guard
+        )
         added = int(gap_pixels.sum())
         if added == 0:
             break
