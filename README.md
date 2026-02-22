@@ -80,8 +80,6 @@ pip install xformers
 
 ## 使用方法
 
-### 方式一：图形界面（推荐零基础用户）
-
 ```bash
 conda activate cityview
 python app.py
@@ -94,28 +92,6 @@ python app.py
 2. 设置输出目录（默认 `output`）
 3. 点击 **🚀 开始处理**
 4. 等待处理完成，查看日志中的进度和结果
-
-### 方式二：命令行（单张图片）
-
-```bash
-conda activate cityview
-python main.py 图片路径.jpg output/
-```
-
-示例：
-
-```bash
-python main.py input/full1.jpg output
-```
-
-### 方式三：命令行（批量处理）
-
-```bash
-conda activate cityview
-python batch_run.py input_folder/ output/ --workers 1
-```
-
-> `--workers 1` 表示每次处理 1 张图（GPU 是瓶颈，并行不会更快）。
 
 ---
 
@@ -152,10 +128,34 @@ output/
 - 更新显卡驱动：访问 https://www.nvidia.cn/drivers/ 下载最新驱动
 - 确认安装的是 GPU 版 PyTorch（第 3 步的命令带 `--index-url ...cu124`）
 
-### 内存不足 / 显存不足
+### 没有 NVIDIA 显卡 / 显存不足
 
-- 关闭其他占用显存的程序（如游戏、其他 AI 工具）
-- 每次只处理一张图片
+本工具需要至少 8 GB 显存的 NVIDIA 显卡。如果你的电脑不满足要求，可以使用 **Google Colab**（免费，提供 T4 16GB 显卡）：
+
+1. 打开 https://colab.research.google.com
+2. 新建笔记本，点击菜单 **运行时 → 更改运行时类型 → T4 GPU**
+3. 在代码单元格中依次运行：
+   ```python
+   # 1. 下载项目
+   !git clone <本项目的仓库地址>
+   %cd AI_City_View
+
+   # 2. 安装依赖
+   !pip install -r requirements.txt
+   !pip install xformers
+
+   # 3. 上传图片并处理
+   from google.colab import files
+   uploaded = files.upload()  # 弹出上传框，选择全景图
+
+   from main import process_panorama
+   for name in uploaded:
+       process_panorama(name, "output")
+
+   # 4. 打包下载结果
+   !zip -r output.zip output/
+   files.download("output.zip")
+   ```
 
 ### 处理速度慢
 
