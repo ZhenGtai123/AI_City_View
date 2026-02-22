@@ -58,7 +58,7 @@ python -c "import torch; print(torch.cuda.is_available())"
 ### 第 4 步：下载项目代码
 
 ```bash
-git clone <本项目的仓库地址>
+git clone https://github.com/ZhenGtai123/AI_City_View.git
 cd AI_City_View
 ```
 
@@ -137,7 +137,7 @@ output/
 3. 在代码单元格中依次运行：
    ```python
    # 1. 下载项目
-   !git clone <本项目的仓库地址>
+   !git clone https://github.com/ZhenGtai123/AI_City_View.git
    %cd AI_City_View
 
    # 2. 安装依赖
