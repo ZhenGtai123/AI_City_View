@@ -46,3 +46,9 @@ data/
 # Large model files
 checkpoints/
 *.zip
+
+# Local files
+.claude/
+*.png
+_test_*.py
+_verify_*.py
