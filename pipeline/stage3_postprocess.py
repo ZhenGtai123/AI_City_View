@@ -72,9 +72,17 @@ def stage3_postprocess(semantic_map: np.ndarray, config: Dict[str, Any]) -> Dict
         if blur_kernel_size % 2 == 0:
             blur_kernel_size += 1
 
+        # 保存天空像素 (class 2): 中值滤波会吞掉树缝间的小块天空
+        sky_before = (processed_map == 2)
+
         before_blur = processed_map
         smoothed_map = cv2.medianBlur(before_blur, ksize=blur_kernel_size)
         pixels_modified = int(np.sum(smoothed_map != before_blur))
+
+        # 恢复被中值滤波消除的天空像素
+        if sky_before.any():
+            smoothed_map[sky_before] = 2
+
         processed_map = smoothed_map
 
     return {

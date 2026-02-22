@@ -1,7 +1,7 @@
 """pipeline.stage6_generate_images
 
-阶段6: 生成20张图片
-功能: 生成所有输出图片（20张）
+阶段6: 生成23张图片
+功能: 生成所有输出图片（23张）
 使用纯numpy操作，无需GPU（LUT查表和boolean masking在CPU上更快）
 """
 
@@ -24,8 +24,9 @@ def stage6_generate_images(
     middleground_mask: np.ndarray,
     background_mask: np.ndarray,
     config: Dict[str, Any],
+    depth_metric: np.ndarray = None,
 ) -> Dict[str, Any]:
-    """阶段6: 生成20张图片（按 plan.md 的固定 key 集合）。"""
+    """阶段6: 生成23张图片（5基础图 × 3 FMB层 + 8张基础/掩码图）。"""
     _validate_inputs(
         original_copy,
         semantic_map,
@@ -44,7 +45,14 @@ def stage6_generate_images(
         colors = ade20k_palette_bgr_dict(int(semantic_map.max()))
 
     semantic_colored = _colorize_semantic(semantic_map, colors, oneformer=backend.startswith('oneformer'))
-    depth_colored = _colorize_depth(depth_map, colormap=str(config.get('depth_colormap', 'INFERNO')))
+
+    # 如果有度量深度，使用固定米数→颜色映射；否则回退到传统 colormap
+    if depth_metric is not None:
+        fg_max = float(config.get('fmb_foreground_max', 10.0))
+        mg_max = float(config.get('fmb_middleground_max', 50.0))
+        depth_colored = _colorize_depth_metric(depth_metric, fg_max, mg_max)
+    else:
+        depth_colored = _colorize_depth(depth_map, colormap=str(config.get('depth_colormap', 'INFERNO')))
     openness_colored = _colorize_openness(openness_map)
     fmb_colored = _create_fmb_visualization(foreground_mask, middleground_mask, background_mask)
 
@@ -56,6 +64,7 @@ def stage6_generate_images(
         depth_colored,
         openness_colored,
         original,
+        fmb_colored,
         foreground_mask,
         middleground_mask,
         background_mask,
@@ -148,12 +157,75 @@ def _colorize_semantic(semantic_map: np.ndarray, colors: Mapping[int, Any] | Non
 
 
 def _colorize_depth(depth_map: np.ndarray, colormap: str = 'INFERNO') -> np.ndarray:
+    """传统 uint8 深度图着色 (回退方案)"""
     cmap = colormap.strip().upper()
     if cmap == 'JET':
         return cv2.applyColorMap(depth_map, cv2.COLORMAP_JET)
     if cmap == 'VIRIDIS':
         return cv2.applyColorMap(depth_map, cv2.COLORMAP_VIRIDIS)
     return cv2.applyColorMap(depth_map, cv2.COLORMAP_INFERNO)
+
+
+def _colorize_depth_metric(
+    depth_metric: np.ndarray,
+    fg_max: float = 10.0,
+    mg_max: float = 50.0,
+) -> np.ndarray:
+    """固定米数→颜色映射 (BGRA格式，天空=透明)
+
+    颜色方案 (确定性映射，不随图片变化):
+        0m   → 深红 (0, 0, 180)
+        10m  → 黄色 (0, 255, 255)   前/中景分界
+        50m  → 青色 (255, 255, 0)   中/背景分界
+        100m → 深蓝 (180, 0, 0)
+        天空 → 透明 (alpha=0)
+    """
+    H, W = depth_metric.shape
+    colored = np.zeros((H, W, 4), dtype=np.uint8)
+
+    is_sky = np.isinf(depth_metric)
+    not_sky = ~is_sky
+    depth_clamped = np.clip(depth_metric, 0, 100.0)
+
+    # Non-sky pixels are fully opaque
+    colored[not_sky, 3] = 255
+
+    # 分段线性插值 (BGR)
+    # 段1: 0-10m  深红→黄
+    # 段2: 10-50m 黄→青
+    # 段3: 50-100m 青→深蓝
+
+    # 段1: 0 ~ fg_max
+    seg1 = depth_clamped < fg_max
+    if np.any(seg1):
+        t = depth_clamped[seg1] / fg_max  # 0→1
+        colored[seg1, 0] = (0 + t * 0).astype(np.uint8)           # B: 0→0
+        colored[seg1, 1] = (0 + t * 255).astype(np.uint8)         # G: 0→255
+        colored[seg1, 2] = (180 + t * 75).astype(np.uint8)        # R: 180→255
+
+    # 段2: fg_max ~ mg_max
+    seg2 = (depth_clamped >= fg_max) & (depth_clamped < mg_max)
+    if np.any(seg2):
+        t = (depth_clamped[seg2] - fg_max) / (mg_max - fg_max)
+        colored[seg2, 0] = (0 + t * 255).astype(np.uint8)         # B: 0→255
+        colored[seg2, 1] = (255 - t * 0).astype(np.uint8)         # G: 255→255
+        colored[seg2, 2] = (255 - t * 255).astype(np.uint8)       # R: 255→0
+
+    # 段3: mg_max ~ 100m
+    max_far = 100.0
+    seg3 = (depth_clamped >= mg_max) & not_sky
+    if np.any(seg3):
+        t = np.clip((depth_clamped[seg3] - mg_max) / (max_far - mg_max), 0, 1)
+        colored[seg3, 0] = (255 - t * 75).astype(np.uint8)        # B: 255→180
+        colored[seg3, 1] = (255 - t * 255).astype(np.uint8)       # G: 255→0
+        colored[seg3, 2] = 0                                       # R: 0
+
+    # Sky: alpha=0 (transparent), BGR=white so layered views show white sky
+    colored[is_sky, 0] = 255
+    colored[is_sky, 1] = 255
+    colored[is_sky, 2] = 255
+
+    return colored
 
 
 def _colorize_openness(openness_map: np.ndarray) -> np.ndarray:
@@ -185,9 +257,17 @@ def _create_mask_images(fg_mask: np.ndarray, mg_mask: np.ndarray, bg_mask: np.nd
 
 
 def _apply_mask_to_image(image: np.ndarray, mask: np.ndarray) -> np.ndarray:
-    masked = np.zeros_like(image)
+    """Apply mask to image, outputting BGRA with transparent background.
+
+    Alpha is determined purely by the FMB mask — source alpha is ignored.
+    This ensures e.g. depth_background shows sky pixels as opaque white
+    even though the standalone depth_map has sky as transparent.
+    """
+    H, W = image.shape[:2]
     m = mask.astype(bool)
-    masked[m] = image[m]
+    masked = np.zeros((H, W, 4), dtype=np.uint8)
+    masked[m, :3] = image[m, :3]  # copy only BGR channels
+    masked[m, 3] = 255            # opaque where mask is True
     return masked
 
 
@@ -196,6 +276,7 @@ def _generate_layered_images(
     depth_colored: np.ndarray,
     openness_colored: np.ndarray,
     original: np.ndarray,
+    fmb_colored: np.ndarray,
     fg_mask: np.ndarray,
     mg_mask: np.ndarray,
     bg_mask: np.ndarray,
@@ -205,6 +286,7 @@ def _generate_layered_images(
         'depth': depth_colored,
         'openness': openness_colored,
         'original': original,
+        'fmb': fmb_colored,
     }
     masks = {
         'foreground': fg_mask.astype(bool),
@@ -230,16 +312,17 @@ def _validate_output_images(images: Dict[str, np.ndarray]) -> None:
         'depth_foreground', 'depth_middleground', 'depth_background',
         'openness_foreground', 'openness_middleground', 'openness_background',
         'original_foreground', 'original_middleground', 'original_background',
+        'fmb_foreground', 'fmb_middleground', 'fmb_background',
     ]
     missing = [k for k in expected_order if k not in images]
     if missing:
         raise ValueError(f"阶段6缺失图片: {missing}")
-    if len(images) != 20:
+    if len(images) != 23:
         extra = [k for k in images.keys() if k not in expected_order]
-        raise ValueError(f"阶段6输出图片数量必须为20，当前={len(images)}，extra_keys={extra}")
+        raise ValueError(f"阶段6输出图片数量必须为23，当前={len(images)}，extra_keys={extra}")
 
     for name, img in images.items():
-        if img.ndim != 3 or img.shape[2] != 3:
-            raise ValueError(f"输出图片 {name} 必须是 (H,W,3)，当前 shape={img.shape}")
+        if img.ndim != 3 or img.shape[2] not in (3, 4):
+            raise ValueError(f"输出图片 {name} 必须是 (H,W,3) 或 (H,W,4)，当前 shape={img.shape}")
         if img.dtype != np.uint8:
             raise ValueError(f"输出图片 {name} 必须是 uint8，当前 dtype={img.dtype}")

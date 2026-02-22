@@ -25,6 +25,9 @@ except ImportError:
 # 全局GPU推理锁: 只包裹torch推理代码块，CPU预处理/后处理不持锁
 _GPU_INFERENCE_LOCK = threading.Lock()
 
+# 模型加载锁: 防止多线程同时加载模型（特别是大模型会导致OOM）
+_MODEL_LOAD_LOCK = threading.Lock()
+
 
 def stage2_ai_inference(image: np.ndarray, config: Dict[str, Any]) -> Dict[str, Any]:
     """
@@ -47,12 +50,48 @@ def stage2_ai_inference(image: np.ndarray, config: Dict[str, Any]) -> Dict[str, 
     else:
         semantic_map = np.zeros((H, W), dtype=np.uint8)
 
-    # 深度估计
-    depth_map = _depth_estimation(image, config)
+    # 深度估计 (返回 uint8 可视化 + float32 原始米数 + sky_mask)
+    depth_result = _depth_estimation_with_metric(image, config)
+    depth_map = depth_result['depth_map']
+    depth_metric = depth_result['depth_metric']
+    sky_mask = depth_result['sky_mask']
+
+    # 天空处理:
+    # - DA3NESTED: depth提供sky_mask → 修正semantic_map
+    # - DA3METRIC/MONO: 无depth sky_mask → 从OneFormer semantic_map==2推导
+    if sky_mask is not None and sky_mask.any():
+        # DA3NESTED的天空掩码修正OneFormer的语义分割 (ADE20K sky=2)
+        semantic_map[sky_mask] = 2
+    elif depth_metric is not None:
+        # DA3METRIC: 从OneFormer推导天空掩码, 设置depth_metric为inf
+        semantic_sky = (semantic_map == 2)
+        if semantic_sky.any():
+            sky_mask = semantic_sky
+            depth_metric[sky_mask] = np.inf
+            sky_pct = sky_mask.sum() / sky_mask.size * 100
+            print(f"  🌤️  Sky mask (from OneFormer): {sky_pct:.1f}% pixels")
+
+    # 天空缝隙修补: 树缝/建筑缝隙间的天空 OneFormer 容易漏掉
+    # 策略: 深度 > p95 (非天空) + 靠近已知天空区域 (膨胀掩码) → 补充为天空
+    if (config.get('sky_refine_gaps', True)
+            and sky_mask is not None and sky_mask.any()
+            and depth_metric is not None):
+        sky_mask, gap_count = _refine_sky_gaps(
+            depth_metric, sky_mask,
+            image_bgr=image,
+            semantic_map=semantic_map,
+        )
+        if gap_count > 0:
+            semantic_map[sky_mask] = 2
+            depth_metric[sky_mask] = np.inf
+            print(f"  🌤️  Sky gap refinement: +{gap_count} pixels "
+                  f"(total {sky_mask.sum()/sky_mask.size*100:.1f}%)")
 
     return {
         'semantic_map': semantic_map,
-        'depth_map': depth_map
+        'depth_map': depth_map,
+        'depth_metric': depth_metric,   # float32, 单位: 米
+        'sky_mask': sky_mask,           # bool (H,W) or None
     }
 
 
@@ -262,18 +301,22 @@ def _maybe_apply_semantic_items_mapping_for_ade20k(model, config: Dict[str, Any]
 
 def _depth_estimation(image: np.ndarray, config: Dict[str, Any]) -> np.ndarray:
     """
-    深度估计 - 支持 Depth Pro, Depth Anything V2/V3
+    深度估计 - 支持 Depth Pro, Depth Anything V2/V3 (仅返回 uint8)
+    保留向后兼容，内部调用 _depth_estimation_with_metric
+    """
+    result = _depth_estimation_with_metric(image, config)
+    return result['depth_map']
 
-    参数:
-        image: (H, W, 3) BGR uint8
-        config: dict - 配置参数
-            - depth_backend: 'depth_pro', 'v3', 'v2' (默认 'depth_pro')
-            - depth_model_id: 模型ID
+
+def _depth_estimation_with_metric(image: np.ndarray, config: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    深度估计 - 返回 uint8 可视化 + float32 度量深度(米) + 天空掩码
 
     返回:
-        depth_map: (H, W) uint8, 值范围 [0, 255]
-            - 0: 最近（前景）
-            - 255: 最远（背景）
+        dict:
+            - depth_map: (H, W) uint8, 0=近, 255=远
+            - depth_metric: (H, W) float32, 单位米 (None if not available)
+            - sky_mask: (H, W) bool (None if not available)
     """
     H, W = image.shape[:2]
     depth_backend = str(config.get('depth_backend', 'depth_pro')).lower().strip()
@@ -283,7 +326,11 @@ def _depth_estimation(image: np.ndarray, config: Dict[str, Any]) -> np.ndarray:
     elif depth_backend == 'v3':
         return _depth_estimation_v3(image, config)
     else:
-        return _depth_estimation_v2(image, config)
+        result = _depth_estimation_v2(image, config)
+        # V2 没有度量深度和天空掩码
+        if isinstance(result, np.ndarray):
+            return {'depth_map': result, 'depth_metric': None, 'sky_mask': None}
+        return result
 
 
 def _depth_estimation_depth_pro(image: np.ndarray, config: Dict[str, Any]) -> np.ndarray:
@@ -335,12 +382,15 @@ def _depth_estimation_depth_pro(image: np.ndarray, config: Dict[str, Any]) -> np
             pred_resized = pred
 
         # Depth Pro 输出度量深度: 高值=远景(天空), 低值=近景(地面)
-        # 我们的约定: 0=近景, 255=远景
-        # 所以不需要反转，invert=False
+        # 保留原始米数用于 FMB
+        depth_metric = pred_resized.astype(np.float32)
+
+        # 可视化用 uint8: 0=近景, 255=远景
         depth_map = _normalize_depth_to_uint8(pred_resized, invert=bool(config.get('depth_invert_depth_pro', False)))
 
         if profile:
             print(f"  ⏱️  Depth Pro postprocess: {time.perf_counter() - t2:.3f}s")
+            print(f"  📏 Depth range: {float(depth_metric.min()):.1f}m - {float(depth_metric.max()):.1f}m")
 
     except Exception as e:
         print(f"  ❌ Depth Pro 出错: {e}")
@@ -349,15 +399,37 @@ def _depth_estimation_depth_pro(image: np.ndarray, config: Dict[str, Any]) -> np
         print(f"  ⚠️  回退到 Depth Anything V3...")
         return _depth_estimation_v3(image, config)
 
-    return depth_map
+    return {
+        'depth_map': depth_map,
+        'depth_metric': depth_metric,
+        'sky_mask': None,  # Depth Pro 没有内置天空检测
+    }
 
 
-def _depth_estimation_v3(image: np.ndarray, config: Dict[str, Any]) -> np.ndarray:
+def _detect_da3_model_type(config: Dict[str, Any]) -> str:
+    """检测DA3模型类型: 'nested', 'metric', 'mono'"""
+    model_id = str(config.get('depth_model_id_v3', '')).upper()
+    if 'NESTED' in model_id:
+        return 'nested'
+    elif 'METRIC' in model_id:
+        return 'metric'
+    else:
+        return 'mono'
+
+
+def _depth_estimation_v3(image: np.ndarray, config: Dict[str, Any]):
     """
     深度估计 - 使用 Depth Anything V3
-    DA3NESTED 系列内置天空分割，自动将天空设为最大深度
+    支持三种模型:
+      - DA3NESTED: 真实度量深度(米) + 内置天空检测 (需16GB+ VRAM)
+      - DA3METRIC: 规范化深度 → 通过焦距转换为米数 (推荐, 8GB VRAM)
+      - DA3MONO: 相对深度 (无米数输出)
+
+    返回:
+        dict: depth_map (uint8), depth_metric (float32 米 or None), sky_mask (bool or None)
     """
     H, W = image.shape[:2]
+    model_type = _detect_da3_model_type(config)
 
     try:
         profile = bool(config.get('profile', False))
@@ -366,13 +438,17 @@ def _depth_estimation_v3(image: np.ndarray, config: Dict[str, Any]) -> np.ndarra
         depth_model = get_depth_model_v3(config)
         if depth_model is None:
             print(f"  ⚠️  警告: Depth Anything V3 未就绪，回退到 V2")
-            return _depth_estimation_v2(image, config)
+            v2_result = _depth_estimation_v2(image, config)
+            if isinstance(v2_result, np.ndarray):
+                return {'depth_map': v2_result, 'depth_metric': None, 'sky_mask': None}
+            return v2_result
 
         if profile:
             print(f"  ⏱️  Depth V3 model ready: {time.perf_counter() - t0:.3f}s")
 
         # 安装 sky mask hook (仅 DA3Nested 模型支持)
-        _install_sky_hook(depth_model)
+        if model_type == 'nested':
+            _install_sky_hook(depth_model)
 
         # OpenCV(BGR)->RGB, 然后转PIL
         rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
@@ -397,7 +473,7 @@ def _depth_estimation_v3(image: np.ndarray, config: Dict[str, Any]) -> np.ndarra
                 pred = pred.cpu().numpy() if hasattr(pred, 'cpu') else np.array(pred)
 
         if profile:
-            print(f"  ⏱️  Depth V3 inference: {time.perf_counter() - t1:.3f}s")
+            print(f"  ⏱️  Depth V3 inference ({model_type}): {time.perf_counter() - t1:.3f}s")
 
         # 以下全部CPU操作，不持GPU锁，其他线程可立即开始GPU推理
         t2 = time.perf_counter()
@@ -406,17 +482,41 @@ def _depth_estimation_v3(image: np.ndarray, config: Dict[str, Any]) -> np.ndarra
         else:
             pred_resized = pred
 
-        # 提取天空掩码 (由 hook 捕获)
-        sky_mask_small = _get_sky_mask(depth_model)
+        # 根据模型类型处理深度值
+        depth_metric = None
         sky_mask = None
-        if sky_mask_small is not None:
-            sky_mask = cv2.resize(
-                sky_mask_small.astype(np.uint8), (W, H),
-                interpolation=cv2.INTER_NEAREST,
-            ).astype(bool)
-            sky_pct = sky_mask.sum() / sky_mask.size * 100
+
+        if model_type == 'nested':
+            # DA3NESTED: 输出已经是米数
+            depth_metric = pred_resized.astype(np.float32)
+
+            # 提取天空掩码 (由 hook 捕获)
+            sky_mask_small = _get_sky_mask(depth_model)
+            if sky_mask_small is not None:
+                sky_mask = cv2.resize(
+                    sky_mask_small.astype(np.uint8), (W, H),
+                    interpolation=cv2.INTER_NEAREST,
+                ).astype(bool)
+                sky_pct = sky_mask.sum() / sky_mask.size * 100
+                depth_metric[sky_mask] = np.inf
+                if profile:
+                    print(f"  🌤️  Sky mask (nested): {sky_pct:.1f}% pixels")
+
+        elif model_type == 'metric':
+            # DA3METRIC: 输出canonical depth at focal=300
+            # 转换: meters = canonical * (actual_focal / 300.0)
+            focal_length = float(config.get('depth_focal_length', 300))
+            scale = focal_length / 300.0
+            depth_metric = (pred_resized * scale).astype(np.float32)
             if profile:
-                print(f"  ⏱️  Sky mask: {sky_pct:.1f}% pixels")
+                print(f"  📐 Focal conversion: canonical * {scale:.3f} (focal={focal_length})")
+            # sky_mask 由 stage2_ai_inference 从 semantic_map 推导
+
+        else:
+            # DA3MONO: 相对深度，无米数
+            depth_metric = None
+            if profile:
+                print(f"  ℹ️  DA3MONO: relative depth only, no metric output")
 
         # V2-Style 视差归一化 (天空自动=255, 对比度增强)
         depth_map = _normalize_depth_v2style(
@@ -425,6 +525,10 @@ def _depth_estimation_v3(image: np.ndarray, config: Dict[str, Any]) -> np.ndarra
         )
 
         if profile:
+            if depth_metric is not None:
+                non_sky = depth_metric[np.isfinite(depth_metric)]
+                if len(non_sky) > 0:
+                    print(f"  📏 Depth range: {float(non_sky.min()):.1f}m - {float(non_sky.max()):.1f}m")
             print(f"  ⏱️  Depth V3 postprocess: {time.perf_counter() - t2:.3f}s")
 
     except Exception as e:
@@ -432,9 +536,138 @@ def _depth_estimation_v3(image: np.ndarray, config: Dict[str, Any]) -> np.ndarra
         import traceback
         traceback.print_exc()
         print(f"  ⚠️  回退到 Depth Anything V2...")
-        return _depth_estimation_v2(image, config)
+        v2_result = _depth_estimation_v2(image, config)
+        if isinstance(v2_result, np.ndarray):
+            return {'depth_map': v2_result, 'depth_metric': None, 'sky_mask': None}
+        return v2_result
 
-    return depth_map
+    return {
+        'depth_map': depth_map,
+        'depth_metric': depth_metric,
+        'sky_mask': sky_mask,
+    }
+
+
+def _refine_sky_gaps(
+    depth_metric: np.ndarray,
+    sky_mask: np.ndarray,
+    depth_percentile: float = 85,
+    dilate_kernel_size: int = 21,
+    dilate_iterations: int = 2,
+    max_rounds: int = 5,
+    image_bgr: np.ndarray | None = None,
+    semantic_map: np.ndarray | None = None,
+) -> tuple:
+    """修补天空缝隙: 树缝/建筑间隙中的天空像素 (迭代扩展 + 颜色/语义守卫)。
+
+    保留原有的激进膨胀策略（21px/5轮）以深入树缝，
+    但增加颜色和语义守卫，防止把绿色树冠、暗色物体、建筑等误标为天空。
+
+    守卫规则:
+      - 排除绿色像素 (H=30-80, S>=40): 树冠/植被
+      - 排除暗色像素 (V<80): 阴影/深色物体
+      - 排除硬性语义类: building, road, car 等永远不应是天空的类别
+
+    参数:
+        depth_metric: (H, W) float32, 天空=inf
+        sky_mask: (H, W) bool, 已知天空
+        depth_percentile: 深度阈值百分位 (默认 90)
+        dilate_kernel_size: 膨胀核大小 (默认 21px)
+        dilate_iterations: 膨胀迭代次数 (默认 2)
+        max_rounds: 最大迭代轮数 (默认 5)
+        image_bgr: (H, W, 3) uint8 BGR原图, 用于颜色守卫
+        semantic_map: (H, W) uint8 ADE20K class ids, 用于语义守卫
+
+    返回:
+        (refined_sky_mask, total_gap_pixel_count)
+    """
+    H, W = depth_metric.shape[:2]
+    finite_non_sky = depth_metric[np.isfinite(depth_metric) & ~sky_mask]
+    if len(finite_non_sky) < 100:
+        return sky_mask, 0
+
+    depth_thresh = float(np.percentile(finite_non_sky, depth_percentile))
+
+    # ---- Precompute HSV channels (reused by guard + color detection) ----
+    h = s = v = None
+    if image_bgr is not None and image_bgr.ndim == 3:
+        hsv = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2HSV)
+        h, s, v = hsv[:, :, 0], hsv[:, :, 1], hsv[:, :, 2]
+
+    # ---- Build guard mask: pixels that should NEVER become sky ----
+    guard = np.zeros((H, W), dtype=bool)
+
+    # Color guard: reject green vegetation and dark pixels
+    if h is not None:
+        green_veg = (h >= 30) & (h <= 80) & (s >= 40)
+        dark = (v < 80)
+        guard |= green_veg | dark
+
+    # Semantic guard: hard classes that are never sky
+    if semantic_map is not None:
+        _NEVER_SKY_IDS = {
+            0, 1, 3, 5, 6, 9, 11, 12, 13, 20,  # wall, building, floor, ceiling, road, grass, sidewalk, person, earth, car
+            33, 53, 72, 80, 83, 90, 116, 127,    # fence, stairs, signboard, truck, bus, van, pole, bicycle
+        }
+        for cls_id in _NEVER_SKY_IDS:
+            guard |= (semantic_map == cls_id)
+
+    # ---- Pass 1: Color+depth direct detection (no dilation needed) ----
+    # Catches isolated sky gaps surrounded by green canopy that dilation
+    # can never reach through. Uses stricter depth threshold (p95).
+    current_sky = sky_mask.copy()
+    total_added = 0
+
+    if h is not None:
+        p95 = float(np.percentile(finite_non_sky, 95))
+
+        # Sky-like colors: blue, cyan, gray/overcast, bright white
+        blue_sky = (h >= 90) & (h <= 135) & (s >= 20) & (s <= 200) & (v >= 100)
+        cyan_sky = (h >= 80) & (h < 90) & (s >= 20) & (s <= 150) & (v >= 140)
+        gray_sky = (s <= 25) & (v >= 150) & (v <= 240)
+        bright_white = (s <= 30) & (v >= 200)
+        sky_color = blue_sky | cyan_sky | gray_sky | bright_white
+
+        # Upper 60% of image only
+        upper_mask = np.zeros((H, W), dtype=bool)
+        upper_mask[:int(H * 0.6), :] = True
+
+        color_sky = (
+            sky_color
+            & upper_mask
+            & (depth_metric > p95)
+            & ~current_sky
+            & ~guard
+        )
+        color_added = int(color_sky.sum())
+        if color_added > 0:
+            current_sky |= color_sky
+            total_added += color_added
+
+    # ---- Pass 2: Iterative dilation (aggressive reach into gaps) ----
+    kernel = cv2.getStructuringElement(
+        cv2.MORPH_ELLIPSE, (dilate_kernel_size, dilate_kernel_size))
+
+    for _round in range(max_rounds):
+        sky_nearby = cv2.dilate(
+            current_sky.astype(np.uint8) * 255, kernel,
+            iterations=dilate_iterations,
+        ) > 0
+
+        gap_pixels = (
+            (depth_metric > depth_thresh)
+            & sky_nearby
+            & ~current_sky
+            & ~guard
+        )
+        added = int(gap_pixels.sum())
+        if added == 0:
+            break
+
+        current_sky = current_sky | gap_pixels
+        total_added += added
+
+    return current_sky, total_added
 
 
 def _install_sky_hook(depth_model):
@@ -674,92 +907,100 @@ _model_cache = {
 
 def get_semantic_model(config: Dict[str, Any]):
     """
-    获取语义分割模型 (带缓存)
+    获取语义分割模型 (带缓存, 线程安全)
     只初始化一次，后续复用
     """
     if not TORCH_AVAILABLE:
         return None, None
 
     backend = str(config.get('semantic_backend', 'oneformer_ade20k')).strip().lower()
-    device = _get_torch_device(config)
 
-    # If backend changes between calls, reset semantic cache.
-    if _model_cache.get('semantic_backend') != backend:
-        _model_cache['semantic_model'] = None
-        _model_cache['semantic_processor'] = None
-        _model_cache['semantic_backend'] = backend
-        _model_cache['semantic_device'] = None
-
-    if _model_cache['semantic_model'] is not None:
+    # 快速路径: 已缓存且backend相同
+    if (_model_cache['semantic_model'] is not None
+            and _model_cache.get('semantic_backend') == backend):
         return _model_cache['semantic_model'], _model_cache['semantic_processor']
 
-    if backend.startswith('oneformer'):
+    # 慢路径: 加锁加载
+    with _MODEL_LOAD_LOCK:
+        # Double-check
+        if (_model_cache['semantic_model'] is not None
+                and _model_cache.get('semantic_backend') == backend):
+            return _model_cache['semantic_model'], _model_cache['semantic_processor']
+
+        device = _get_torch_device(config)
+
+        # If backend changes between calls, reset semantic cache.
+        if _model_cache.get('semantic_backend') != backend:
+            _model_cache['semantic_model'] = None
+            _model_cache['semantic_processor'] = None
+            _model_cache['semantic_backend'] = backend
+            _model_cache['semantic_device'] = None
+
+        if backend.startswith('oneformer'):
+            try:
+                profile = bool(config.get('profile', False))
+                t_import = time.perf_counter()
+                print("  初始化 OneFormer（首次导入/下载权重可能较慢）...")
+                from transformers import AutoProcessor, OneFormerForUniversalSegmentation
+                if profile:
+                    print(f"  ⏱️  import transformers(oneformer): {time.perf_counter() - t_import:.3f}s")
+            except Exception as e:
+                print(f"  ❌ 无法导入 OneFormer 相关依赖: {e}")
+                return None, None
+
+            model_id = str(config.get('oneformer_model_id', 'shi-labs/oneformer_ade20k_swin_large'))
+            use_fp16 = bool(config.get('semantic_use_fp16', True))
+            print(f"  加载 OneFormer(ADE20K-150): {model_id} (device={device}, fp16={use_fp16})")
+
+            t_load = time.perf_counter()
+            processor = AutoProcessor.from_pretrained(model_id)
+            model = OneFormerForUniversalSegmentation.from_pretrained(model_id)
+            model.eval()
+
+            if device.type == 'cuda':
+                model.to(device)
+                if use_fp16:
+                    model.half()
+
+            if bool(config.get('profile', False)):
+                print(f"  ⏱️  load processor+model: {time.perf_counter() - t_load:.3f}s")
+
+            _model_cache['semantic_model'] = model
+            _model_cache['semantic_processor'] = processor
+            _model_cache['semantic_backend'] = backend
+            _model_cache['semantic_device'] = str(device)
+            return model, processor
+
+        # LangSAM backend
         try:
             profile = bool(config.get('profile', False))
             t_import = time.perf_counter()
-            print("  初始化 OneFormer（首次导入/下载权重可能较慢）...")
-            from transformers import AutoProcessor, OneFormerForUniversalSegmentation
+            print("  初始化 LangSAM（首次导入/下载权重可能较慢）...")
+            from lang_sam import LangSAM
             if profile:
-                print(f"  ⏱️  import transformers(oneformer): {time.perf_counter() - t_import:.3f}s")
+                print(f"  ⏱️  import lang_sam: {time.perf_counter() - t_import:.3f}s")
         except Exception as e:
-            print(f"  ❌ 无法导入 OneFormer 相关依赖: {e}")
+            print(f"  ❌ 无法导入 lang_sam: {e}")
             return None, None
 
-        model_id = str(config.get('oneformer_model_id', 'shi-labs/oneformer_ade20k_swin_large'))
-        use_fp16 = bool(config.get('semantic_use_fp16', True))
-        print(f"  加载 OneFormer(ADE20K-150): {model_id} (device={device}, fp16={use_fp16})")
+        sam_type = str(config.get('sam_type', '')).strip()
+        if not sam_type:
+            encoder = str(config.get('encoder', 'vitb')).lower()
+            if encoder in ('vitb', 'vit_b', 'b'):
+                sam_type = 'sam2.1_hiera_base_plus'
+            elif encoder in ('vits', 'vit_s', 's'):
+                sam_type = 'sam2.1_hiera_small'
+            else:
+                sam_type = 'sam2.1_hiera_small'
 
-        t_load = time.perf_counter()
-        processor = AutoProcessor.from_pretrained(model_id)
-        model = OneFormerForUniversalSegmentation.from_pretrained(model_id)
-        model.eval()
-
-        if device.type == 'cuda':
-            model.to(device)
-            if use_fp16:
-                model.half()
-
-        if bool(config.get('profile', False)):
-            print(f"  ⏱️  load processor+model: {time.perf_counter() - t_load:.3f}s")
+        print(f"  加载 LangSAM (sam_type={sam_type}, device={device})")
+        model = LangSAM(sam_type=sam_type, device=device)
 
         _model_cache['semantic_model'] = model
-        _model_cache['semantic_processor'] = processor
+        _model_cache['semantic_processor'] = None
         _model_cache['semantic_backend'] = backend
         _model_cache['semantic_device'] = str(device)
-        return model, processor
-
-    # LangSAM backend
-    try:
-        profile = bool(config.get('profile', False))
-        t_import = time.perf_counter()
-        print("  初始化 LangSAM（首次导入/下载权重可能较慢）...")
-        from lang_sam import LangSAM
-        if profile:
-            print(f"  ⏱️  import lang_sam: {time.perf_counter() - t_import:.3f}s")
-    except Exception as e:
-        print(f"  ❌ 无法导入 lang_sam: {e}")
-        return None, None
-
-    # LangSAM (v0.2.x) 基于 SAM2.1，支持的 key：
-    # sam2.1_hiera_tiny / sam2.1_hiera_small / sam2.1_hiera_base_plus / sam2.1_hiera_large
-    sam_type = str(config.get('sam_type', '')).strip()
-    if not sam_type:
-        encoder = str(config.get('encoder', 'vitb')).lower()
-        if encoder in ('vitb', 'vit_b', 'b'):
-            sam_type = 'sam2.1_hiera_base_plus'
-        elif encoder in ('vits', 'vit_s', 's'):
-            sam_type = 'sam2.1_hiera_small'
-        else:
-            sam_type = 'sam2.1_hiera_small'
-
-    print(f"  加载 LangSAM (sam_type={sam_type}, device={device})")
-    model = LangSAM(sam_type=sam_type, device=device)
-
-    _model_cache['semantic_model'] = model
-    _model_cache['semantic_processor'] = None
-    _model_cache['semantic_backend'] = backend
-    _model_cache['semantic_device'] = str(device)
-    return model, None
+        return model, None
 
 
 def _langsam_predict_masks(model, pil_img: Image.Image, text_prompt: str, config: Dict[str, Any] | None = None) -> Optional[np.ndarray]:
@@ -848,9 +1089,18 @@ def get_depth_model(config: Dict[str, Any]):
 
 def get_depth_model_v3(config: Dict[str, Any]):
     """
-    获取 Depth Anything V3 模型 (带缓存)
+    获取 Depth Anything V3 模型 (带缓存, 线程安全)
     """
-    if _model_cache['depth_model_v3'] is None:
+    # 快速路径: 已缓存则直接返回
+    if _model_cache['depth_model_v3'] is not None:
+        return _model_cache['depth_model_v3']
+
+    # 慢路径: 加锁加载，防止多线程同时加载大模型导致OOM
+    with _MODEL_LOAD_LOCK:
+        # Double-check: 另一个线程可能已经加载完成
+        if _model_cache['depth_model_v3'] is not None:
+            return _model_cache['depth_model_v3']
+
         if not TORCH_AVAILABLE:
             return None
 
@@ -866,13 +1116,12 @@ def get_depth_model_v3(config: Dict[str, Any]):
             print(f"  请安装: pip install git+https://github.com/ByteDance-Seed/depth-anything-3.git")
             return None
 
-        # 支持的模型 (精度从低到高):
-        #   - depth-anything/DA3-BASE       : ViT-B backbone, 快速
-        #   - depth-anything/DA3-LARGE      : ViT-L backbone, 精度更高
-        #   - depth-anything/DA3-GIANT      : ViT-G backbone, 最高精度 (需要更多显存)
-        #   - depth-anything/DA3MONO-LARGE  : 单目深度优化版
-        #   - depth-anything/DA3METRIC-LARGE: 度量深度版本
-        model_id = str(config.get('depth_model_id_v3', 'depth-anything/DA3MONO-LARGE'))
+        # 支持的模型:
+        #   - depth-anything/DA3NESTED-GIANT-LARGE-1.1 : 度量深度(米) + 天空检测 (推荐)
+        #   - depth-anything/DA3NESTED-GIANT-LARGE     : 度量深度(米) + 天空检测
+        #   - depth-anything/DA3METRIC-LARGE           : 规范化深度 (需要焦距转换)
+        #   - depth-anything/DA3MONO-LARGE             : 相对深度 (非度量)
+        model_id = str(config.get('depth_model_id_v3', 'depth-anything/DA3NESTED-GIANT-LARGE-1.1'))
         device = _get_torch_device(config)
 
         print(f"  加载 Depth Anything V3: {model_id} (device={device})")
@@ -887,7 +1136,7 @@ def get_depth_model_v3(config: Dict[str, Any]):
             import traceback
             traceback.print_exc()
             return None
-            
+
         if profile:
             print(f"  ⏱️  load DA3 model: {time.perf_counter() - t_load:.3f}s")
 
