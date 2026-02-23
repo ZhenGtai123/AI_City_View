@@ -251,9 +251,11 @@ def process_panorama(
     print(f"处理全景图: {image_path_obj.name}")
     print(f"{'='*60}")
 
-    # 读取原始图片
+    # 读取原始图片（支持中文路径）
     print("步骤1: 读取全景图...")
-    original = cv2.imread(str(image_path_obj))
+    original = cv2.imdecode(
+        np.fromfile(str(image_path_obj), dtype=np.uint8), cv2.IMREAD_COLOR
+    )
     if original is None:
         return {'success': False, 'error': f'无法读取图片: {image_path}'}
 

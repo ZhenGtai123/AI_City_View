@@ -69,7 +69,7 @@ def stage2_ai_inference(image: np.ndarray, config: Dict[str, Any]) -> Dict[str, 
             sky_mask = semantic_sky
             depth_metric[sky_mask] = np.inf
             sky_pct = sky_mask.sum() / sky_mask.size * 100
-            print(f"  🌤️  Sky mask (from OneFormer): {sky_pct:.1f}% pixels")
+            print(f"  [SKY] Sky mask (from OneFormer): {sky_pct:.1f}% pixels")
 
     # 天空缝隙修补: 树缝/建筑缝隙间的天空 OneFormer 容易漏掉
     # 策略: 深度 > p95 (非天空) + 靠近已知天空区域 (膨胀掩码) → 补充为天空
@@ -84,7 +84,7 @@ def stage2_ai_inference(image: np.ndarray, config: Dict[str, Any]) -> Dict[str, 
         if gap_count > 0:
             semantic_map[sky_mask] = 2
             depth_metric[sky_mask] = np.inf
-            print(f"  🌤️  Sky gap refinement: +{gap_count} pixels "
+            print(f"  [SKY] Sky gap refinement: +{gap_count} pixels "
                   f"(total {sky_mask.sum()/sky_mask.size*100:.1f}%)")
 
     return {
@@ -389,8 +389,8 @@ def _depth_estimation_depth_pro(image: np.ndarray, config: Dict[str, Any]) -> np
         depth_map = _normalize_depth_to_uint8(pred_resized, invert=bool(config.get('depth_invert_depth_pro', False)))
 
         if profile:
-            print(f"  ⏱️  Depth Pro postprocess: {time.perf_counter() - t2:.3f}s")
-            print(f"  📏 Depth range: {float(depth_metric.min()):.1f}m - {float(depth_metric.max()):.1f}m")
+            print(f"  [TIME] Depth Pro postprocess: {time.perf_counter() - t2:.3f}s")
+            print(f"  [DEPTH] Depth range: {float(depth_metric.min()):.1f}m - {float(depth_metric.max()):.1f}m")
 
     except Exception as e:
         print(f"  ❌ Depth Pro 出错: {e}")
@@ -500,7 +500,7 @@ def _depth_estimation_v3(image: np.ndarray, config: Dict[str, Any]):
                 sky_pct = sky_mask.sum() / sky_mask.size * 100
                 depth_metric[sky_mask] = np.inf
                 if profile:
-                    print(f"  🌤️  Sky mask (nested): {sky_pct:.1f}% pixels")
+                    print(f"  [SKY] Sky mask (nested): {sky_pct:.1f}% pixels")
 
         elif model_type == 'metric':
             # DA3METRIC: 输出canonical depth at focal=300
@@ -509,14 +509,14 @@ def _depth_estimation_v3(image: np.ndarray, config: Dict[str, Any]):
             scale = focal_length / 300.0
             depth_metric = (pred_resized * scale).astype(np.float32)
             if profile:
-                print(f"  📐 Focal conversion: canonical * {scale:.3f} (focal={focal_length})")
+                print(f"  [FOCAL] Focal conversion: canonical * {scale:.3f} (focal={focal_length})")
             # sky_mask 由 stage2_ai_inference 从 semantic_map 推导
 
         else:
             # DA3MONO: 相对深度，无米数
             depth_metric = None
             if profile:
-                print(f"  ℹ️  DA3MONO: relative depth only, no metric output")
+                print(f"  [INFO] DA3MONO: relative depth only, no metric output")
 
         # V2-Style 视差归一化 (天空自动=255, 对比度增强)
         depth_map = _normalize_depth_v2style(
@@ -528,8 +528,8 @@ def _depth_estimation_v3(image: np.ndarray, config: Dict[str, Any]):
             if depth_metric is not None:
                 non_sky = depth_metric[np.isfinite(depth_metric)]
                 if len(non_sky) > 0:
-                    print(f"  📏 Depth range: {float(non_sky.min()):.1f}m - {float(non_sky.max()):.1f}m")
-            print(f"  ⏱️  Depth V3 postprocess: {time.perf_counter() - t2:.3f}s")
+                    print(f"  [DEPTH] Depth range: {float(non_sky.min()):.1f}m - {float(non_sky.max()):.1f}m")
+            print(f"  [TIME] Depth V3 postprocess: {time.perf_counter() - t2:.3f}s")
 
     except Exception as e:
         print(f"  ❌ Depth Anything V3 出错: {e}")
