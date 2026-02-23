@@ -716,3 +716,105 @@ def _kmeans_fmb_segmentation(
     fmb_map[valid_mask] = mapped_labels
 
     return fmb_map
+
+
+# ==================== 度量深度 FMB (新) ====================
+
+def stage4_metric_fmb(
+    depth_metric: np.ndarray,
+    config: Dict[str, Any],
+    semantic_map: Optional[np.ndarray] = None,
+    sky_mask: Optional[np.ndarray] = None,
+) -> Dict[str, Any]:
+    """阶段4: 基于度量深度(米)的FMB分层
+
+    逐像素按距离阈值分层，不使用连通域分析和强规则。
+    树跨越多个深度时，自然按像素级别分到不同层。
+
+    参数:
+        depth_metric: (H, W) float32, 单位米, 天空=inf
+        config: 配置参数
+            - fmb_foreground_max: 前景最大距离 (默认 10m)
+            - fmb_middleground_max: 中景最大距离 (默认 50m)
+        semantic_map: (H, W) uint8, 语义图 (可选, 用于统计)
+        sky_mask: (H, W) bool, 天空掩码 (可选)
+
+    返回:
+        dict: foreground_mask, middleground_mask, background_mask, depth_stats 等
+    """
+    if depth_metric.ndim != 2:
+        raise ValueError(f"depth_metric 必须是二维 (H, W)，当前 shape={depth_metric.shape}")
+
+    H, W = depth_metric.shape
+    total_pixels = H * W
+
+    # 可配置阈值
+    fg_max = float(config.get('fmb_foreground_max', 10.0))    # 0 ~ 10m
+    mg_max = float(config.get('fmb_middleground_max', 50.0))  # 10 ~ 50m
+
+    # 天空掩码: sky_mask 参数 或 inf 值
+    is_sky = np.isinf(depth_metric)
+    if sky_mask is not None:
+        is_sky = is_sky | sky_mask
+
+    # 逐像素分层
+    fmb_map = np.full((H, W), 2, dtype=np.uint8)  # 默认背景
+    fmb_map[depth_metric < fg_max] = 0              # 前景
+    fmb_map[(depth_metric >= fg_max) & (depth_metric < mg_max)] = 1  # 中景
+    # depth >= mg_max 或 inf(天空) 保持为 2 (背景)
+
+    # 生成掩码
+    foreground_mask = (fmb_map == 0)
+    middleground_mask = (fmb_map == 1)
+    background_mask = (fmb_map == 2)
+
+    fg_pixels = int(np.sum(foreground_mask))
+    mg_pixels = int(np.sum(middleground_mask))
+    bg_pixels = int(np.sum(background_mask))
+    sky_pixels = int(np.sum(is_sky))
+
+    def _pct(x: int) -> float:
+        return (x / total_pixels * 100.0) if total_pixels > 0 else 0.0
+
+    # 深度统计 (排除天空)
+    finite_depth = depth_metric[np.isfinite(depth_metric)]
+    if len(finite_depth) > 0:
+        depth_stats = {
+            'min_meters': float(np.min(finite_depth)),
+            'max_meters': float(np.max(finite_depth)),
+            'mean_meters': float(np.mean(finite_depth)),
+            'median_meters': float(np.median(finite_depth)),
+            'p10_meters': float(np.percentile(finite_depth, 10)),
+            'p25_meters': float(np.percentile(finite_depth, 25)),
+            'p75_meters': float(np.percentile(finite_depth, 75)),
+            'p90_meters': float(np.percentile(finite_depth, 90)),
+        }
+    else:
+        depth_stats = {
+            'min_meters': 0.0, 'max_meters': 0.0,
+            'mean_meters': 0.0, 'median_meters': 0.0,
+            'p10_meters': 0.0, 'p25_meters': 0.0,
+            'p75_meters': 0.0, 'p90_meters': 0.0,
+        }
+
+    return {
+        'foreground_mask': foreground_mask,
+        'middleground_mask': middleground_mask,
+        'background_mask': background_mask,
+        'fmb_map': fmb_map,
+        'depth_thresholds': {
+            'foreground_max_meters': fg_max,
+            'middleground_max_meters': mg_max,
+        },
+        'layer_stats': {
+            'foreground_pixels': fg_pixels,
+            'middleground_pixels': mg_pixels,
+            'background_pixels': bg_pixels,
+            'sky_pixels': sky_pixels,
+            'foreground_percent': _pct(fg_pixels),
+            'middleground_percent': _pct(mg_pixels),
+            'background_percent': _pct(bg_pixels),
+            'sky_percent': _pct(sky_pixels),
+        },
+        'depth_stats': depth_stats,
+    }

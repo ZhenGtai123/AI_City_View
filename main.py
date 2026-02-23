@@ -18,7 +18,7 @@ from pipeline.stage1_preprocess import crop_panorama_three_views
 from pipeline.stage2_ai_inference import stage2_ai_inference
 from pipeline.stage3_postprocess import stage3_postprocess
 from pipeline.stage4_depth_layering import stage4_depth_layering
-from pipeline.stage4_intelligent_fmb import stage4_intelligent_fmb
+from pipeline.stage4_intelligent_fmb import stage4_intelligent_fmb, stage4_metric_fmb
 from pipeline.stage5_openness import stage5_openness
 from pipeline.stage6_generate_images import stage6_generate_images
 from pipeline.stage7_save_outputs import stage7_save_outputs
@@ -58,10 +58,19 @@ def get_default_config() -> Dict[str, Any]:
         'depth_backend': 'v3',
 
         # ---- Depth Anything V3 配置 ----
-        'depth_model_id_v3': 'depth-anything/DA3NESTED-GIANT-LARGE-1.1',
+        # DA3模型选择:
+        #   DA3METRIC-LARGE (0.35B) - 规范化深度,需焦距转换,适合8GB VRAM (推荐)
+        #   DA3NESTED-GIANT-LARGE-1.1 (1.4B) - 真实米数+天空检测,需16GB+ VRAM
+        #   DA3MONO-LARGE (0.35B) - 相对深度,无米数
+        'depth_model_id_v3': 'depth-anything/DA3METRIC-LARGE',
+        # 焦距 (用于DA3METRIC规范化深度→米数转换)
+        # DA3METRIC输出canonical depth at focal=300, 转换: meters = canonical * (focal/300)
+        # 对于90° FOV等距柱状裁剪(512px宽): 有效焦距 ≈ w/(2*tan(45°)) = 256
+        # 默认300 (=使用原始canonical值，误差约15%)
+        'depth_focal_length': 300,
         # 处理分辨率 (必须是14的倍数):
         #   504(快) / 672(平衡) / 1008(高精度) / 1512(最高)
-        'depth_process_res': 1008,
+        'depth_process_res': 672,
         'depth_invert_v3': False,
     }
 
@@ -96,24 +105,35 @@ def process_half_image(
 
     depth_map = stage2_result['depth_map']
     semantic_map = stage2_result['semantic_map']
+    depth_metric = stage2_result.get('depth_metric')   # float32 米, 可能为 None
+    sky_mask = stage2_result.get('sky_mask')            # bool, 可能为 None
 
     # Stage 3: 语义后处理
     print("  Stage 3: 语义后处理...")
     stage3_result = stage3_postprocess(semantic_map, config)
     semantic_map_processed = stage3_result['semantic_map_processed']
 
-    # Stage 4: 景深分层（纯深度分层，不依赖语义）
+    # Stage 4: 景深分层
     print("  Stage 4: 景深分层...")
-    fmb_method = str(config.get('fmb_method', 'intelligent')).lower()
-
-    if fmb_method == 'intelligent':
-        stage4_result = stage4_intelligent_fmb(
-            depth_map, config, semantic_map=semantic_map
+    if depth_metric is not None:
+        # 有度量深度 → 使用米数阈值 (0-10m/10-50m/>50m)
+        print("    使用度量深度分层 (metric FMB)")
+        stage4_result = stage4_metric_fmb(
+            depth_metric, config,
+            semantic_map=semantic_map,
+            sky_mask=sky_mask,
         )
     else:
-        stage4_result = stage4_depth_layering(
-            depth_map, config, semantic_map=semantic_map
-        )
+        # 回退到旧方法
+        fmb_method = str(config.get('fmb_method', 'intelligent')).lower()
+        if fmb_method == 'intelligent':
+            stage4_result = stage4_intelligent_fmb(
+                depth_map, config, semantic_map=semantic_map
+            )
+        else:
+            stage4_result = stage4_depth_layering(
+                depth_map, config, semantic_map=semantic_map
+            )
 
     # Stage 5: 开放度计算
     print("  Stage 5: 开放度计算...")
@@ -133,16 +153,76 @@ def process_half_image(
         foreground_mask,
         middleground_mask,
         background_mask,
-        config
+        config,
+        depth_metric=depth_metric,
     )
+
+    # 构建增强 metadata (包含深度统计和 FMB 信息)
+    enhanced_metadata = dict(stage1_data['metadata'])
+    if 'depth_stats' in stage4_result:
+        enhanced_metadata['depth_stats'] = stage4_result['depth_stats']
+    if 'depth_thresholds' in stage4_result:
+        enhanced_metadata['fmb_thresholds'] = stage4_result['depth_thresholds']
+    if 'layer_stats' in stage4_result:
+        enhanced_metadata['fmb_layer_stats'] = stage4_result['layer_stats']
+    # 颜色图例 (固定映射) + 全色阶对应表
+    if depth_metric is not None:
+        fg_max = float(config.get('fmb_foreground_max', 10.0))
+        mg_max = float(config.get('fmb_middleground_max', 50.0))
+
+        # 生成完整色阶对应表: 每1米一个条目 (0-100m) + sky
+        # 与 stage6._colorize_depth_metric 使用相同的分段线性插值
+        color_scale = []
+        max_far = 100.0
+        for m in range(int(max_far) + 1):
+            d = float(m)
+            if d < fg_max:
+                t = d / fg_max
+                b, g, r = int(0), int(t * 255), int(180 + t * 75)
+            elif d < mg_max:
+                t = (d - fg_max) / (mg_max - fg_max)
+                b, g, r = int(t * 255), 255, int(255 - t * 255)
+            else:
+                t = min((d - mg_max) / (max_far - mg_max), 1.0)
+                b, g, r = int(255 - t * 75), int(255 - t * 255), 0
+            b, g, r = max(0, min(255, b)), max(0, min(255, g)), max(0, min(255, r))
+            hex_color = f'#{r:02X}{g:02X}{b:02X}'
+            color_scale.append({
+                'meters': m,
+                'rgb': [r, g, b],
+                'hex': hex_color,
+            })
+        color_scale.append({
+            'meters': 'sky',
+            'rgb': [255, 255, 255],
+            'hex': '#FFFFFF',
+        })
+
+        enhanced_metadata['depth_color_legend'] = {
+            'scheme': 'fixed_metric',
+            'segments': [
+                {'range': f'0-{fg_max}m', 'label': 'foreground', 'color_start': '#B40000', 'color_end': '#FFFF00'},
+                {'range': f'{fg_max}-{mg_max}m', 'label': 'middleground', 'color_start': '#FFFF00', 'color_end': '#00FFFF'},
+                {'range': f'>{mg_max}m', 'label': 'background', 'color_start': '#00FFFF', 'color_end': '#B40000'},
+                {'range': 'sky', 'label': 'sky', 'color': '#FFFFFF'},
+            ],
+            'color_scale': color_scale,
+        }
+
+    # 额外输出: sky_mask (白=天空, 黑=非天空) + 原始语义 class ID
+    output_images = stage6_result['images']
+    if sky_mask is not None:
+        output_images['sky_mask'] = (sky_mask.astype(np.uint8) * 255)
+    output_images['semantic_raw'] = semantic_map  # 原始 class ID (单通道 uint8)
 
     # Stage 7: 保存输出
     print("  Stage 7: 保存输出...")
     stage7_result = stage7_save_outputs(
-        stage6_result['images'],
+        output_images,
         output_dir,
         basename,
-        stage1_data['metadata']
+        enhanced_metadata,
+        depth_metric=depth_metric,
     )
 
     return {
