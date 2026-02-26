@@ -1205,6 +1205,29 @@ def _get_torch_device(config: Dict[str, Any]):
     return torch.device(device_str)
 
 
+def preload_models(config: Dict[str, Any]):
+    """
+    在主线程中预加载所有 AI 模型到 GPU，避免 worker 线程竞争加载。
+    应在任何 worker 启动前调用一次。
+    """
+    import sys
+    print("预加载 AI 模型...", file=sys.stderr)
+    t0 = time.perf_counter()
+
+    if config.get('enable_semantic', True):
+        get_semantic_model(config)
+
+    depth_version = str(config.get('depth_version', 'v3')).lower()
+    if depth_version == 'v3':
+        get_depth_model_v3(config)
+    elif depth_version == 'depth_pro':
+        get_depth_model_depth_pro(config)
+    else:
+        get_depth_model(config)
+
+    print(f"模型预加载完成 ({time.perf_counter() - t0:.1f}s)", file=sys.stderr)
+
+
 def clear_model_cache():
     """
     清除模型缓存 (释放GPU内存)

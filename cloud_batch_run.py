@@ -51,7 +51,7 @@ from tqdm import tqdm
 sys.path.insert(0, str(Path(__file__).parent))
 
 from main import process_panorama, get_default_config
-from pipeline.stage2_ai_inference import set_gpu_concurrency
+from pipeline.stage2_ai_inference import set_gpu_concurrency, preload_models
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -246,6 +246,9 @@ def cloud_batch_process(
     base_config = get_default_config()
     if config_overrides:
         base_config.update(config_overrides)
+
+    # --- 主线程预加载模型 (避免 worker 线程竞争加载) ---
+    preload_models(base_config)
 
     success_count = 0
     fail_count = 0
