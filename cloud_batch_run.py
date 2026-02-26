@@ -51,6 +51,7 @@ from tqdm import tqdm
 sys.path.insert(0, str(Path(__file__).parent))
 
 from main import process_panorama, get_default_config
+from pipeline.stage2_ai_inference import set_gpu_concurrency
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -400,6 +401,8 @@ def main():
     proc.add_argument('--depth-res', type=int, default=672, help='深度处理分辨率 (504/672/1008)')
     proc.add_argument('--png-compression', type=int, default=6, help='PNG 压缩等级 0-9 (默认 6)')
     proc.add_argument('--workers', type=int, default=4, help='并行 worker 数量 (默认 4)')
+    proc.add_argument('--gpu-concurrency', type=int, default=2,
+                       help='GPU 并发推理数 (默认 2, 24GB GPU 可设 3)')
     proc.add_argument('--refresh-cache', action='store_true', help='强制重新列出 Azure blob (忽略缓存)')
 
     args = parser.parse_args()
@@ -428,6 +431,10 @@ def main():
         'depth_process_res': args.depth_res,
         'png_compression': args.png_compression,
     }
+
+    # --- GPU 并发 ---
+    set_gpu_concurrency(args.gpu_concurrency)
+    logging.info("GPU concurrency: %d", args.gpu_concurrency)
 
     # --- 开跑 ---
     result = cloud_batch_process(

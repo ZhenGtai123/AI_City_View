@@ -22,11 +22,18 @@ except ImportError:
     print("警告: PyTorch未安装，AI推理功能将不可用")
 
 
-# 全局GPU推理锁: 只包裹torch推理代码块，CPU预处理/后处理不持锁
-_GPU_INFERENCE_LOCK = threading.Lock()
+# 全局GPU推理信号量: 控制同时进行GPU推理的线程数
+# Semaphore(1) 等价于 Lock(), Semaphore(2) 允许2个并发推理
+_GPU_INFERENCE_LOCK = threading.Semaphore(1)
 
 # 模型加载锁: 防止多线程同时加载模型（特别是大模型会导致OOM）
 _MODEL_LOAD_LOCK = threading.Lock()
+
+
+def set_gpu_concurrency(n: int):
+    """设置GPU并发推理数 (默认1, L4/24GB建议2-3)"""
+    global _GPU_INFERENCE_LOCK
+    _GPU_INFERENCE_LOCK = threading.Semaphore(max(1, n))
 
 
 def stage2_ai_inference(image: np.ndarray, config: Dict[str, Any]) -> Dict[str, Any]:
