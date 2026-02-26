@@ -81,14 +81,32 @@ def _make_azure_client(conn_str: Optional[str], sas_url: Optional[str], containe
     raise ValueError("需要 --azure-conn-str + --azure-container 或 --azure-sas-url")
 
 
-def list_azure_images(client, prefix: str = '') -> List[str]:
-    """列出 Azure 容器中所有图片 blob 名称 (已排序)"""
+BLOB_LIST_CACHE = Path(__file__).parent / '.blob_list_cache.txt'
+
+
+def list_azure_images(client, prefix: str = '', force_refresh: bool = False) -> List[str]:
+    """列出 Azure 容器中所有图片 blob 名称 (带本地缓存)"""
+    # 有缓存直接读
+    if not force_refresh and BLOB_LIST_CACHE.exists():
+        blobs = [l.strip() for l in BLOB_LIST_CACHE.read_text().splitlines() if l.strip()]
+        logging.info("从缓存加载 %d 张图片 (%s)", len(blobs), BLOB_LIST_CACHE.name)
+        return blobs
+
+    # 首次: 从 Azure 列出并缓存
+    logging.info("首次列出 Azure Blob (可能需要几分钟)...")
     blobs = []
+    count = 0
     for blob in client.list_blobs(name_starts_with=prefix or None):
         if Path(blob.name).suffix.lower() in IMAGE_EXTENSIONS:
             blobs.append(blob.name)
+        count += 1
+        if count % 50000 == 0:
+            logging.info("  已扫描 %d 个 blob, 找到 %d 张图片...", count, len(blobs))
     blobs.sort()
-    logging.info("Azure Blob 共找到 %d 张图片", len(blobs))
+
+    # 写入缓存
+    BLOB_LIST_CACHE.write_text('\n'.join(blobs))
+    logging.info("Azure Blob 共找到 %d 张图片 (已缓存到 %s)", len(blobs), BLOB_LIST_CACHE.name)
     return blobs
 
 
@@ -212,6 +230,7 @@ def cloud_batch_process(
     local_buffer: str = '/tmp/ai_city_buffer',
     limit: int = 0,
     config_overrides: Optional[dict] = None,
+    force_refresh: bool = False,
 ) -> dict:
     """
     主处理循环
@@ -219,7 +238,7 @@ def cloud_batch_process(
     返回: {'success': int, 'fail': int, 'skipped': int, 'interrupted': bool}
     """
     # --- 列出待处理图片 ---
-    all_images = list_azure_images(azure_client, azure_prefix)
+    all_images = list_azure_images(azure_client, azure_prefix, force_refresh=force_refresh)
     completed = list_completed_basenames(gcs_bucket, gcs_prefix)
 
     pending: List[str] = []
@@ -397,6 +416,7 @@ def main():
     proc.add_argument('--limit', type=int, default=0, help='最多处理几张 (0=全部)')
     proc.add_argument('--depth-res', type=int, default=672, help='深度处理分辨率 (504/672/1008)')
     proc.add_argument('--png-compression', type=int, default=6, help='PNG 压缩等级 0-9 (默认 6)')
+    proc.add_argument('--refresh-cache', action='store_true', help='强制重新列出 Azure blob (忽略缓存)')
 
     args = parser.parse_args()
 
@@ -435,6 +455,7 @@ def main():
         local_buffer=args.local_buffer,
         limit=args.limit,
         config_overrides=config_overrides,
+        force_refresh=args.refresh_cache,
     )
 
     sys.exit(0 if not result['interrupted'] else 1)
