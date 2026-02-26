@@ -42,7 +42,9 @@ import argparse
 import logging
 from pathlib import Path
 from typing import Set, List, Optional, Tuple
-from threading import Thread, Event
+from threading import Event
+from concurrent.futures import ThreadPoolExecutor, FIRST_COMPLETED
+from concurrent.futures import wait as futures_wait
 
 from tqdm import tqdm
 
@@ -186,43 +188,6 @@ def upload_panorama_views(gcs_bucket, output_dir: str, basename: str, gcs_prefix
 
 
 # ---------------------------------------------------------------------------
-# Prefetch: 在处理当前图片时预下载下一张
-# ---------------------------------------------------------------------------
-class Prefetcher:
-    """后台线程预下载下一张图片"""
-
-    def __init__(self, azure_client, download_dir: Path):
-        self._client = azure_client
-        self._dir = download_dir
-        self._thread: Optional[Thread] = None
-        self._result: Optional[str] = None
-        self._error: Optional[Exception] = None
-
-    def start(self, blob_name: str) -> None:
-        """开始后台下载 (会先等待上一次完成)"""
-        if self._thread is not None:
-            self._thread.join()
-        self._result = None
-        self._error = None
-        local_path = str(self._dir / os.path.basename(blob_name))
-        self._thread = Thread(target=self._download, args=(blob_name, local_path), daemon=True)
-        self._thread.start()
-
-    def _download(self, blob_name: str, local_path: str):
-        try:
-            download_blob(self._client, blob_name, local_path)
-            self._result = local_path
-        except Exception as e:
-            self._error = e
-
-    def wait(self) -> Tuple[Optional[str], Optional[Exception]]:
-        """等待下载完成，返回 (local_path, error)"""
-        if self._thread:
-            self._thread.join()
-        return self._result, self._error
-
-
-# ---------------------------------------------------------------------------
 # Main processing loop
 # ---------------------------------------------------------------------------
 def cloud_batch_process(
@@ -234,9 +199,14 @@ def cloud_batch_process(
     limit: int = 0,
     config_overrides: Optional[dict] = None,
     force_refresh: bool = False,
+    num_workers: int = 4,
 ) -> dict:
     """
-    主处理循环
+    主处理循环 (多 worker 并行)
+
+    每个 worker 独立执行: 下载 → 处理 → 上传 → 清理
+    GPU 推理由 stage2 的 _GPU_INFERENCE_LOCK 串行保护，
+    而 I/O (下载/上传) 和 CPU 后处理在 worker 间自然重叠。
 
     返回: {'success': int, 'fail': int, 'skipped': int, 'interrupted': bool}
     """
@@ -255,90 +225,118 @@ def cloud_batch_process(
 
     total = len(pending)
     skip_count = len(completed)
-    logging.info("待处理: %d 张 (已跳过: %d)", total, skip_count)
+    logging.info("待处理: %d 张 (已跳过: %d, workers: %d)", total, skip_count, num_workers)
 
     if total == 0:
         logging.info("没有需要处理的图片，退出")
         return {'success': 0, 'fail': 0, 'skipped': skip_count, 'interrupted': False}
 
-    # --- 准备目录和配置 ---
+    # --- 为每个 worker 创建独立的 input/output 目录 ---
     buffer_path = Path(local_buffer)
-    input_dir = buffer_path / 'input'
-    output_dir = buffer_path / 'output'
-    input_dir.mkdir(parents=True, exist_ok=True)
-    output_dir.mkdir(parents=True, exist_ok=True)
+    for wid in range(num_workers):
+        (buffer_path / f'w{wid}' / 'input').mkdir(parents=True, exist_ok=True)
+        (buffer_path / f'w{wid}' / 'output').mkdir(parents=True, exist_ok=True)
 
     base_config = get_default_config()
     if config_overrides:
         base_config.update(config_overrides)
 
-    prefetcher = Prefetcher(azure_client, input_dir)
-
     success_count = 0
     fail_count = 0
     start_time = time.time()
 
-    # 静默 pipeline 的 print 输出，只保留 tqdm 进度条
-    devnull = open(os.devnull, 'w')
-
-    pbar = tqdm(total=total, desc="Processing", unit="img")
-
-    for idx, blob_name in enumerate(pending, 1):
-        if _shutdown_event.is_set():
-            logging.warning("退出信号已收到，停止处理")
-            break
-
+    def worker(blob_name: str, wid: int) -> Tuple[str, bool, str]:
+        """单个 worker: 下载 → 处理 → 上传 → 清理"""
         basename = Path(blob_name).stem
-        input_file = input_dir / os.path.basename(blob_name)
+        w_dir = buffer_path / f'w{wid}'
+        input_file = w_dir / 'input' / os.path.basename(blob_name)
+        w_output = w_dir / 'output'
 
         try:
-            # --- 下载 (prefetch 或同步) ---
-            if idx == 1:
-                download_blob(azure_client, blob_name, str(input_file))
-            else:
-                pre_path, pre_err = prefetcher.wait()
-                if pre_err or not pre_path or not Path(pre_path).exists():
-                    download_blob(azure_client, blob_name, str(input_file))
+            # 下载
+            download_blob(azure_client, blob_name, str(input_file))
 
-            # --- 预下载下一张 ---
-            if idx < total:
-                prefetcher.start(pending[idx])
-
-            # --- 处理 (静默 pipeline stdout) ---
+            # 处理 (GPU 推理由 stage2 的 _GPU_INFERENCE_LOCK 串行保护)
             config = copy.deepcopy(base_config)
-            with contextlib.redirect_stdout(devnull):
-                result = process_panorama(str(input_file), str(output_dir), config)
+            result = process_panorama(str(input_file), str(w_output), config)
 
-            if result.get('success'):
-                # --- 上传到 GCS ---
-                n_files = upload_panorama_views(gcs_bucket, str(output_dir), basename, gcs_prefix)
-                success_count += 1
+            if not result.get('success'):
+                return basename, False, result.get('error', 'unknown')
 
-                # 详细信息写日志文件（不刷屏）
-                logging.info("OK: %s (%.1fs, %d files)", basename, result.get('total_time', 0), n_files)
-            else:
-                fail_count += 1
-                logging.error("FAIL: %s - %s", basename, result.get('error', 'unknown'))
-
-            pbar.set_postfix_str(f"ok={success_count} fail={fail_count}")
+            # 上传
+            n_files = upload_panorama_views(
+                gcs_bucket, str(w_output), basename, gcs_prefix
+            )
+            return basename, True, f"{n_files} files"
 
         except Exception as e:
-            fail_count += 1
-            logging.error("ERROR: %s - %s", basename, e)
-            pbar.set_postfix_str(f"ok={success_count} fail={fail_count}")
+            return basename, False, str(e)
 
         finally:
-            # --- 清理本地文件 ---
+            # 清理
             if input_file.exists():
                 input_file.unlink()
             for view in ('left', 'front', 'right'):
-                view_dir = output_dir / f"{basename}_{view}"
-                if view_dir.exists():
-                    shutil.rmtree(view_dir, ignore_errors=True)
-            pbar.update(1)
+                vd = w_output / f"{basename}_{view}"
+                if vd.exists():
+                    shutil.rmtree(vd, ignore_errors=True)
 
-    pbar.close()
-    devnull.close()
+    # 静默 pipeline 的 print 输出，只保留 tqdm 进度条 (tqdm 默认写 stderr)
+    old_stdout = sys.stdout
+    sys.stdout = open(os.devnull, 'w')
+
+    pbar = tqdm(total=total, desc="Processing", unit="img", file=sys.stderr)
+
+    try:
+        with ThreadPoolExecutor(max_workers=num_workers) as pool:
+            active = {}       # future -> worker_id
+            free_wids = list(range(num_workers))
+            pending_iter = iter(pending)
+
+            def submit_next():
+                """从队列取下一张，分配空闲 worker 提交"""
+                if _shutdown_event.is_set() or not free_wids:
+                    return
+                try:
+                    blob_name = next(pending_iter)
+                except StopIteration:
+                    return
+                wid = free_wids.pop(0)
+                f = pool.submit(worker, blob_name, wid)
+                active[f] = wid
+
+            # 填满初始批次
+            for _ in range(min(num_workers, total)):
+                submit_next()
+
+            while active:
+                done, _ = futures_wait(active, return_when=FIRST_COMPLETED, timeout=2)
+                for f in done:
+                    wid = active.pop(f)
+                    free_wids.append(wid)
+
+                    try:
+                        basename, ok, msg = f.result()
+                    except Exception as e:
+                        ok, basename, msg = False, "unknown", str(e)
+
+                    if ok:
+                        success_count += 1
+                        logging.info("OK: %s (%s)", basename, msg)
+                    else:
+                        fail_count += 1
+                        logging.error("FAIL: %s - %s", basename, msg)
+
+                    pbar.update(1)
+                    pbar.set_postfix_str(f"ok={success_count} fail={fail_count}")
+
+                    # 提交下一张
+                    submit_next()
+
+    finally:
+        pbar.close()
+        sys.stdout.close()
+        sys.stdout = old_stdout
 
     # --- 汇总 ---
     total_time = time.time() - start_time
@@ -401,6 +399,7 @@ def main():
     proc.add_argument('--limit', type=int, default=0, help='最多处理几张 (0=全部)')
     proc.add_argument('--depth-res', type=int, default=672, help='深度处理分辨率 (504/672/1008)')
     proc.add_argument('--png-compression', type=int, default=6, help='PNG 压缩等级 0-9 (默认 6)')
+    proc.add_argument('--workers', type=int, default=4, help='并行 worker 数量 (默认 4)')
     proc.add_argument('--refresh-cache', action='store_true', help='强制重新列出 Azure blob (忽略缓存)')
 
     args = parser.parse_args()
@@ -440,6 +439,7 @@ def main():
         limit=args.limit,
         config_overrides=config_overrides,
         force_refresh=args.refresh_cache,
+        num_workers=args.workers,
     )
 
     sys.exit(0 if not result['interrupted'] else 1)
