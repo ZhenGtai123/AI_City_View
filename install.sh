@@ -65,10 +65,10 @@ echo ""
 echo "[4/5] 安装 Python 依赖..."
 
 # PyTorch (CUDA 12.x)
-pip install -q torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124
+pip install  torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124
 
 # 核心依赖
-pip install -q \
+pip install  \
     opencv-python>=4.8.0 \
     numpy>=1.24.0 \
     Pillow>=10.0.0 \
@@ -77,10 +77,10 @@ pip install -q \
     tqdm>=4.65.0
 
 # LangSAM (语义分割)
-pip install -q git+https://github.com/luca-medeiros/lang-segment-anything.git
+pip install  git+https://github.com/luca-medeiros/lang-segment-anything.git
 
 # 云存储 SDK
-pip install -q azure-storage-blob google-cloud-storage
+pip install  azure-storage-blob google-cloud-storage
 
 # ---------------------------------------------------------------------------
 # 5. 验证安装
