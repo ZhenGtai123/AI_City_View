@@ -59,10 +59,10 @@ def get_default_config() -> Dict[str, Any]:
 
         # ---- Depth Anything V3 配置 ----
         # DA3模型选择:
-        #   DA3METRIC-LARGE (0.35B) - 规范化深度,需焦距转换,适合8GB VRAM (推荐)
-        #   DA3NESTED-GIANT-LARGE-1.1 (1.4B) - 真实米数+天空检测,需16GB+ VRAM
+        #   DA3NESTED-GIANT-LARGE-1.1 (1.4B) - 真实米数+天空检测,需16GB+ VRAM (推荐)
+        #   DA3METRIC-LARGE (0.35B) - 规范化深度,需焦距转换,适合8GB VRAM
         #   DA3MONO-LARGE (0.35B) - 相对深度,无米数
-        'depth_model_id_v3': 'depth-anything/DA3METRIC-LARGE',
+        'depth_model_id_v3': 'depth-anything/DA3NESTED-GIANT-LARGE-1.1',
         # 焦距 (用于DA3METRIC规范化深度→米数转换)
         # DA3METRIC输出canonical depth at focal=300, 转换: meters = canonical * (focal/300)
         # 对于90° FOV等距柱状裁剪(512px宽): 有效焦距 ≈ w/(2*tan(45°)) = 256
