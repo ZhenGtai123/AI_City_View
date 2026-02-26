@@ -61,7 +61,7 @@ if [ ! -d "$VENV_DIR" ]; then
     echo "=== 首次部署：安装依赖 ==="
 
     apt-get update -qq
-    apt-get install -y -qq python3-venv python3-pip libgl1-mesa-glx libglib2.0-0 git
+    apt-get install -y -qq python3-venv python3-pip libgl1 libglib2.0-0 git
 
     if [ ! -d "$PROJECT_DIR" ]; then
         echo "错误: 项目代码不存在于 $PROJECT_DIR，请先部署"
