@@ -46,3 +46,4 @@ data/
 # Large model files
 checkpoints/
 *.zip
+.blob_list_cache.txt

@@ -281,16 +281,9 @@ def cloud_batch_process(
     # 静默 pipeline 的 print 输出，只保留 tqdm 进度条
     devnull = open(os.devnull, 'w')
 
-    pbar = tqdm(
-        enumerate(pending, 1),
-        total=total,
-        desc="Processing",
-        unit="img",
-        bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}] ok={postfix[ok]} fail={postfix[fail]}",
-        postfix={'ok': 0, 'fail': 0},
-    )
+    pbar = tqdm(total=total, desc="Processing", unit="img")
 
-    for idx, blob_name in pbar:
+    for idx, blob_name in enumerate(pending, 1):
         if _shutdown_event.is_set():
             logging.warning("退出信号已收到，停止处理")
             break
@@ -327,12 +320,12 @@ def cloud_batch_process(
                 fail_count += 1
                 logging.error("FAIL: %s - %s", basename, result.get('error', 'unknown'))
 
-            pbar.set_postfix(ok=success_count, fail=fail_count, refresh=False)
+            pbar.set_postfix_str(f"ok={success_count} fail={fail_count}")
 
         except Exception as e:
             fail_count += 1
             logging.error("ERROR: %s - %s", basename, e)
-            pbar.set_postfix(ok=success_count, fail=fail_count, refresh=False)
+            pbar.set_postfix_str(f"ok={success_count} fail={fail_count}")
 
         finally:
             # --- 清理本地文件 ---
@@ -342,6 +335,7 @@ def cloud_batch_process(
                 view_dir = output_dir / f"{basename}_{view}"
                 if view_dir.exists():
                     shutil.rmtree(view_dir, ignore_errors=True)
+            pbar.update(1)
 
     pbar.close()
     devnull.close()
