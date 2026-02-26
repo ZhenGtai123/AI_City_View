@@ -31,6 +31,7 @@ cloud_batch_run.py - Azure Blob → GCP VM → GCS
 
 from __future__ import annotations
 
+import contextlib
 import copy
 import sys
 import os
@@ -42,6 +43,8 @@ import logging
 from pathlib import Path
 from typing import Set, List, Optional, Tuple
 from threading import Thread, Event
+
+from tqdm import tqdm
 
 sys.path.insert(0, str(Path(__file__).parent))
 
@@ -275,7 +278,19 @@ def cloud_batch_process(
     fail_count = 0
     start_time = time.time()
 
-    for idx, blob_name in enumerate(pending, 1):
+    # 静默 pipeline 的 print 输出，只保留 tqdm 进度条
+    devnull = open(os.devnull, 'w')
+
+    pbar = tqdm(
+        enumerate(pending, 1),
+        total=total,
+        desc="Processing",
+        unit="img",
+        bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}] ok={postfix[ok]} fail={postfix[fail]}",
+        postfix={'ok': 0, 'fail': 0},
+    )
+
+    for idx, blob_name in pbar:
         if _shutdown_event.is_set():
             logging.warning("退出信号已收到，停止处理")
             break
@@ -285,58 +300,39 @@ def cloud_batch_process(
 
         try:
             # --- 下载 (prefetch 或同步) ---
-            t_dl = time.time()
             if idx == 1:
                 download_blob(azure_client, blob_name, str(input_file))
             else:
                 pre_path, pre_err = prefetcher.wait()
                 if pre_err or not pre_path or not Path(pre_path).exists():
-                    logging.warning("预下载失败或文件缺失，重试: %s", pre_err)
                     download_blob(azure_client, blob_name, str(input_file))
-            dl_time = time.time() - t_dl
 
             # --- 预下载下一张 ---
             if idx < total:
                 prefetcher.start(pending[idx])
 
-            # --- 处理 (每次用 config 的独立副本，防止 pipeline 内部变异) ---
-            logging.info(
-                "[%d/%d] 处理: %s (下载 %.1fs)",
-                idx, total, basename, dl_time,
-            )
-            t_proc = time.time()
+            # --- 处理 (静默 pipeline stdout) ---
             config = copy.deepcopy(base_config)
-            result = process_panorama(str(input_file), str(output_dir), config)
-            proc_time = time.time() - t_proc
+            with contextlib.redirect_stdout(devnull):
+                result = process_panorama(str(input_file), str(output_dir), config)
 
             if result.get('success'):
-                # --- 只上传当前全景图的 3 个视角子目录 ---
-                t_up = time.time()
+                # --- 上传到 GCS ---
                 n_files = upload_panorama_views(gcs_bucket, str(output_dir), basename, gcs_prefix)
-                up_time = time.time() - t_up
-
                 success_count += 1
-                elapsed = time.time() - start_time
-                rate = success_count / elapsed * 3600
-                remaining = total - idx
-                eta_hr = remaining / rate if rate > 0 else float('inf')
 
-                logging.info(
-                    "[%d/%d] OK: %s | proc=%.1fs up=%.1fs (%d files) | "
-                    "%.0f img/hr ETA %.1fhr",
-                    idx, total, basename, proc_time, up_time, n_files,
-                    rate, eta_hr,
-                )
+                # 详细信息写日志文件（不刷屏）
+                logging.info("OK: %s (%.1fs, %d files)", basename, result.get('total_time', 0), n_files)
             else:
                 fail_count += 1
-                logging.error(
-                    "[%d/%d] FAIL: %s - %s",
-                    idx, total, basename, result.get('error', 'unknown'),
-                )
+                logging.error("FAIL: %s - %s", basename, result.get('error', 'unknown'))
+
+            pbar.set_postfix(ok=success_count, fail=fail_count, refresh=False)
 
         except Exception as e:
             fail_count += 1
-            logging.error("[%d/%d] ERROR: %s - %s", idx, total, basename, e)
+            logging.error("ERROR: %s - %s", basename, e)
+            pbar.set_postfix(ok=success_count, fail=fail_count, refresh=False)
 
         finally:
             # --- 清理本地文件 ---
@@ -347,13 +343,8 @@ def cloud_batch_process(
                 if view_dir.exists():
                     shutil.rmtree(view_dir, ignore_errors=True)
 
-        # --- 定期统计 ---
-        if idx % CHECKPOINT_INTERVAL == 0:
-            elapsed = time.time() - start_time
-            logging.info(
-                "--- 进度: %d/%d (成功 %d, 失败 %d) | %.1f min ---",
-                idx, total, success_count, fail_count, elapsed / 60,
-            )
+    pbar.close()
+    devnull.close()
 
     # --- 汇总 ---
     total_time = time.time() - start_time
@@ -427,7 +418,6 @@ def main():
         format='%(asctime)s [%(levelname)s] %(message)s',
         datefmt='%m-%d %H:%M:%S',
         handlers=[
-            logging.StreamHandler(),
             logging.FileHandler(str(log_file), encoding='utf-8'),
         ],
     )
