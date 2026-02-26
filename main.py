@@ -159,6 +159,10 @@ def process_half_image(
 
     # 构建增强 metadata (包含深度统计和 FMB 信息)
     enhanced_metadata = dict(stage1_data['metadata'])
+    enhanced_metadata['config'] = {
+        k: v for k, v in config.items()
+        if isinstance(v, (str, int, float, bool))
+    }
     if 'depth_stats' in stage4_result:
         enhanced_metadata['depth_stats'] = stage4_result['depth_stats']
     if 'depth_thresholds' in stage4_result:
