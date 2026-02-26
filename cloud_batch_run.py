@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import contextlib
 import copy
+import queue
 import sys
 import os
 import signal
@@ -43,8 +44,7 @@ import logging
 from pathlib import Path
 from typing import Set, List, Optional, Tuple
 from threading import Event
-from concurrent.futures import ThreadPoolExecutor, FIRST_COMPLETED
-from concurrent.futures import wait as futures_wait
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from tqdm import tqdm
 
@@ -302,9 +302,13 @@ def cloud_batch_process(
 
             # ── Phase 2: 批量处理 (GPU + CPU) ──
             process_results = {}  # basename -> (ok, msg, wid)
+            # 动态 wid 分配: 用队列保证同一时刻每个 wid 只被一个 worker 使用
+            free_wids: queue.Queue[int] = queue.Queue()
+            for w in range(num_workers):
+                free_wids.put(w)
 
-            def _process_one(args_tuple) -> Tuple[str, bool, str, int]:
-                blob_name, local_path, wid = args_tuple
+            def _process_one(blob_name: str, local_path: str) -> Tuple[str, bool, str, int]:
+                wid = free_wids.get()  # 阻塞直到有空闲 wid
                 basename = Path(blob_name).stem
                 w_output = buffer_path / f'w{wid}' / 'output'
                 try:
@@ -315,18 +319,25 @@ def cloud_batch_process(
                     return basename, True, '', wid
                 except Exception as e:
                     return basename, False, str(e), wid
-
-            # 为每个图片分配 worker id (循环使用)
-            process_tasks = []
-            for i, (blob_name, local_path) in enumerate(local_files.items()):
-                wid = i % num_workers
-                process_tasks.append((blob_name, local_path, wid))
+                finally:
+                    free_wids.put(wid)  # 归还 wid
 
             t0 = time.time()
             with ThreadPoolExecutor(max_workers=num_workers) as proc_pool:
-                for basename, ok, msg, wid in proc_pool.map(_process_one, process_tasks):
+                futures = {
+                    proc_pool.submit(_process_one, bn, lp): bn
+                    for bn, lp in local_files.items()
+                }
+                for f in as_completed(futures):
+                    try:
+                        basename, ok, msg, wid = f.result()
+                    except Exception as e:
+                        basename = Path(futures[f]).stem
+                        ok, msg, wid = False, str(e), -1
                     process_results[basename] = (ok, msg, wid)
-                    if not ok:
+                    if ok:
+                        logging.info("PROC OK: %s", basename)
+                    else:
                         fail_count += 1
                         pbar.update(1)
                         pbar.set_postfix_str(f"ok={success_count} fail={fail_count}")
@@ -358,7 +369,16 @@ def cloud_batch_process(
 
             t0 = time.time()
             with ThreadPoolExecutor(max_workers=io_threads) as ul_pool:
-                for basename, ok, msg, wid in ul_pool.map(_upload_one, to_upload):
+                ul_futures = {
+                    ul_pool.submit(_upload_one, item): item[0]
+                    for item in to_upload
+                }
+                for f in as_completed(ul_futures):
+                    try:
+                        basename, ok, msg, wid = f.result()
+                    except Exception as e:
+                        basename = ul_futures[f]
+                        ok, msg, wid = False, str(e), -1
                     if ok:
                         success_count += 1
                         logging.info("OK: %s (%s)", basename, msg)
