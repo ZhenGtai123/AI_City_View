@@ -283,27 +283,24 @@ def cloud_pipeline_process(
 
     # ── 下载线程 ──
     def _downloader():
-        """用线程池并行下载，下载完一个就往 download_q 放一个"""
+        """用线程池并行下载，下载完一个就直接放入 download_q (线程自阻塞)"""
         def _dl_one(blob_name):
             if _shutdown_event.is_set():
-                return blob_name, None
+                return
             local_path = str(input_dir / os.path.basename(blob_name))
             try:
                 download_blob(azure_client, blob_name, local_path)
-                return blob_name, local_path
+                # 关键: put 在下载线程内部 → 队列满时该线程阻塞 → 线程池不再分配新任务
+                download_q.put((blob_name, local_path))
             except Exception as e:
                 logging.error("FAIL(dl): %s - %s", Path(blob_name).stem, e)
                 with _lock:
                     counts['fail'] += 1
                 pbar.update(1)
-                return blob_name, None
 
         with ThreadPoolExecutor(max_workers=io_threads) as pool:
-            futures = {pool.submit(_dl_one, bn): bn for bn in pending}
-            for f in as_completed(futures):
-                blob_name, local_path = f.result()
-                if local_path and not _shutdown_event.is_set():
-                    download_q.put((blob_name, local_path))  # 阻塞直到有空位
+            # pool.map 逐个分发，线程被 download_q.put() 阻塞时不会消耗新任务
+            list(pool.map(_dl_one, pending))
         # 放 num_workers 个毒丸让所有处理线程退出
         for _ in range(num_workers):
             download_q.put(_SENTINEL)
@@ -342,8 +339,11 @@ def cloud_pipeline_process(
                     os.unlink(local_path)
 
     # ── 上传线程 ──
+    # 上传用有界信号量限制并发，避免累积大量 future
+    _ul_semaphore = threading.Semaphore(io_threads)
+
     def _uploader():
-        """从 upload_q 取结果，用线程池并行上传"""
+        """从 upload_q 取结果，限制并发上传数"""
         def _ul_one(item):
             basename, wid = item
             w_output = str(buffer_path / f'w{wid}' / 'output')
@@ -366,17 +366,18 @@ def cloud_pipeline_process(
                 pbar.update(1)
                 with _lock:
                     pbar.set_postfix_str(f"ok={counts['success']} fail={counts['fail']}")
+                _ul_semaphore.release()
 
         with ThreadPoolExecutor(max_workers=io_threads) as pool:
-            futures = []
             while True:
                 item = upload_q.get()
                 if item is _SENTINEL:
                     break
-                futures.append(pool.submit(_ul_one, item))
-            # 等所有上传完成
-            for f in as_completed(futures):
-                f.result()  # 异常已在 _ul_one 内部处理
+                _ul_semaphore.acquire()  # 限制并发上传数
+                pool.submit(_ul_one, item)
+            # 等待所有上传完成: 获取全部信号量 = 所有任务已释放
+            for _ in range(io_threads):
+                _ul_semaphore.acquire()
 
     try:
         # 启动三个阶段的线程
