@@ -19,6 +19,7 @@ Usage:
 from __future__ import annotations
 
 import asyncio
+import copy
 import io
 import json
 import logging
@@ -127,6 +128,7 @@ def get_default_config() -> Dict[str, Any]:
         "split_method": "percentile",
         "semantic_items": semantic_config,
         "enable_semantic": True,
+        "semantic_backend": "oneformer_ade20k",
         "depth_backend": "v3",
         "depth_model_id_v3": "depth-anything/DA3METRIC-LARGE",
         "depth_focal_length": 300,
@@ -148,7 +150,7 @@ def build_config_from_request(
         semantic_colors:       {"0": [r,g,b], "1": [r,g,b], ...}
         enable_hole_filling:   bool
     """
-    config = dict(base_config)
+    config = copy.deepcopy(base_config)
 
     classes = request_data.get("semantic_classes")
     countability = request_data.get("semantic_countability")
@@ -185,16 +187,26 @@ def _compute_class_statistics(
     semantic_map: np.ndarray,
     config: Dict[str, Any],
 ) -> Dict[str, Any]:
-    """Compute per-class pixel counts and percentages from the semantic map."""
+    """Compute per-class pixel counts and percentages from the semantic map.
+
+    Uses ``config["classes"]`` (ADE20K id-aligned label list set by stage2's
+    ``_maybe_apply_semantic_items_mapping_for_ade20k``) when available, falling
+    back to ``semantic_items`` for non-OneFormer backends.
+    """
     total_pixels = int(semantic_map.size)
     unique, counts = np.unique(semantic_map, return_counts=True)
 
+    # Prefer the id-aligned label list produced by stage2 (ADE20K mapping)
+    classes_list = config.get("classes")  # list[str] indexed by class id
     items = config.get("semantic_items", [])
+
     stats: Dict[str, Any] = {}
     for cls_id, count in zip(unique, counts):
         cls_id = int(cls_id)
-        if cls_id < len(items):
-            name = items[cls_id].get("name", f"class_{cls_id}")
+        if classes_list and cls_id < len(classes_list):
+            name = classes_list[cls_id]
+        elif cls_id < len(items):
+            name = items[cls_id].get("name", f"class_{cls_id}") if isinstance(items[cls_id], dict) else f"class_{cls_id}"
         else:
             name = f"class_{cls_id}"
         stats[name] = {
@@ -402,14 +414,19 @@ app.add_middleware(
 
 @app.get("/health")
 async def health():
-    import torch
-
-    gpu_available = torch.cuda.is_available()
-    gpu_name = torch.cuda.get_device_name(0) if gpu_available else None
+    gpu_available = False
+    gpu_name = None
     gpu_memory = None
-    if gpu_available:
-        total = torch.cuda.get_device_properties(0).total_mem
-        gpu_memory = f"{total / (1024**3):.1f} GB"
+
+    try:
+        import torch
+        gpu_available = torch.cuda.is_available()
+        if gpu_available:
+            gpu_name = torch.cuda.get_device_name(0)
+            total = torch.cuda.get_device_properties(0).total_memory
+            gpu_memory = f"{total / (1024**3):.1f} GB"
+    except ImportError:
+        pass
 
     return {
         "status": "healthy",
@@ -472,6 +489,12 @@ async def analyze(
         result = await loop.run_in_executor(None, _run_pipeline, image, config, job_id)
     except Exception as e:
         logger.error("Pipeline error: %s", e, exc_info=True)
+        try:
+            import torch
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        except Exception:
+            pass
         raise HTTPException(status_code=500, detail=f"Pipeline error: {e}")
 
     return JSONResponse(content=result)
