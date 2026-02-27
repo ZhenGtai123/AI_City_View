@@ -47,3 +47,5 @@ data/
 checkpoints/
 *.zip
 .blob_list_cache.txt
+.blob_list_cache_0.txt
+.blob_list_cache_1.txt

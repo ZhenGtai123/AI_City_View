@@ -43,6 +43,7 @@ import argparse
 import logging
 from pathlib import Path
 from typing import Set, List, Optional, Tuple
+import threading
 from threading import Event
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -191,7 +192,7 @@ def upload_panorama_views(gcs_bucket, output_dir: str, basename: str, gcs_prefix
 # ---------------------------------------------------------------------------
 # Main processing loop
 # ---------------------------------------------------------------------------
-def cloud_batch_process(
+def cloud_pipeline_process(
     azure_client,
     gcs_bucket,
     gcs_prefix: str,
@@ -201,16 +202,19 @@ def cloud_batch_process(
     config_overrides: Optional[dict] = None,
     force_refresh: bool = False,
     num_workers: int = 4,
-    batch_size: int = 100,
     io_threads: int = 16,
+    prefetch: int = 8,
+    instance_id: int = 0,
+    total_instances: int = 1,
 ) -> dict:
     """
-    批量模式: 批量下载 → 批量处理 → 批量上传 → 清理，每批 batch_size 张。
+    流水线模式: 下载/处理/上传三阶段同时进行。
 
-    阶段分离的好处:
-    - 下载阶段: io_threads 个线程并行下载，充分利用带宽
-    - 处理阶段: num_workers 个 worker 并行处理，CPU/GPU 全力运行
-    - 上传阶段: io_threads 个线程并行上传，不抢 CPU/GPU
+    架构:
+      下载线程池(io_threads) → download_q → 处理线程池(num_workers) → upload_q → 上传线程池(io_threads)
+
+    download_q 有 maxsize=prefetch，防止下载太快撑爆磁盘。
+    upload_q 无上限 (上传比处理快)。
 
     返回: {'success': int, 'fail': int, 'skipped': int, 'interrupted': bool}
     """
@@ -224,13 +228,19 @@ def cloud_batch_process(
         if basename not in completed:
             pending.append(blob_name)
 
+    # --- 多实例分片 ---
+    if total_instances > 1:
+        pending = [b for i, b in enumerate(pending) if i % total_instances == instance_id]
+        logging.info("多实例分片: instance %d/%d, 分到 %d 张",
+                     instance_id, total_instances, len(pending))
+
     if limit > 0:
         pending = pending[:limit]
 
     total = len(pending)
     skip_count = len(completed)
-    logging.info("待处理: %d 张 (已跳过: %d, batch=%d, workers=%d, io_threads=%d)",
-                 total, skip_count, batch_size, num_workers, io_threads)
+    logging.info("待处理: %d 张 (已跳过: %d, workers=%d, io_threads=%d, prefetch=%d)",
+                 total, skip_count, num_workers, io_threads, prefetch)
 
     if total == 0:
         logging.info("没有需要处理的图片，退出")
@@ -247,158 +257,149 @@ def cloud_batch_process(
     if config_overrides:
         base_config.update(config_overrides)
 
-    # --- 主线程预加载模型 (避免 worker 线程竞争加载) ---
+    # --- 主线程预加载模型 ---
     preload_models(base_config)
 
-    success_count = 0
-    fail_count = 0
+    # --- 队列 ---
+    _SENTINEL = None  # 毒丸信号，表示上游结束
+    download_q: queue.Queue = queue.Queue(maxsize=prefetch)
+    upload_q: queue.Queue = queue.Queue()
+
+    # --- 动态 wid 分配 ---
+    free_wids: queue.Queue[int] = queue.Queue()
+    for w in range(num_workers):
+        free_wids.put(w)
+
+    # --- 计数器 (用锁保护) ---
+    _lock = threading.Lock()
+    counts = {'success': 0, 'fail': 0}
+
     start_time = time.time()
 
     # 静默 pipeline 的 print 输出
     old_stdout = sys.stdout
     sys.stdout = open(os.devnull, 'w')
-    pbar = tqdm(total=total, desc="Processing", unit="img", file=sys.stderr)
+    pbar = tqdm(total=total, desc="Pipeline", unit="img", file=sys.stderr)
 
-    try:
-        # --- 分批处理 ---
-        for batch_start in range(0, total, batch_size):
+    # ── 下载线程 ──
+    def _downloader():
+        """用线程池并行下载，下载完一个就往 download_q 放一个"""
+        def _dl_one(blob_name):
             if _shutdown_event.is_set():
-                break
-
-            batch = pending[batch_start:batch_start + batch_size]
-            batch_num = batch_start // batch_size + 1
-            total_batches = (total + batch_size - 1) // batch_size
-            logging.info("=== 批次 %d/%d (%d 张) ===", batch_num, total_batches, len(batch))
-
-            # ── Phase 1: 批量下载 ──
-            local_files = {}  # blob_name -> local_path
-            dl_errors = []
-
-            def _download_one(blob_name: str) -> Tuple[str, Optional[str], str]:
-                if _shutdown_event.is_set():
-                    return blob_name, None, 'interrupted'
-                local_path = str(input_dir / os.path.basename(blob_name))
-                try:
-                    download_blob(azure_client, blob_name, local_path)
-                    return blob_name, local_path, ''
-                except Exception as e:
-                    return blob_name, None, str(e)
-
-            t0 = time.time()
-            with ThreadPoolExecutor(max_workers=io_threads) as dl_pool:
-                for blob_name, local_path, err in dl_pool.map(_download_one, batch):
-                    if local_path:
-                        local_files[blob_name] = local_path
-                    else:
-                        dl_errors.append((blob_name, err))
-            logging.info("下载完成: %d 成功, %d 失败, %.1fs",
-                         len(local_files), len(dl_errors), time.time() - t0)
-
-            # 下载失败的直接记录
-            for blob_name, err in dl_errors:
-                fail_count += 1
+                return blob_name, None
+            local_path = str(input_dir / os.path.basename(blob_name))
+            try:
+                download_blob(azure_client, blob_name, local_path)
+                return blob_name, local_path
+            except Exception as e:
+                logging.error("FAIL(dl): %s - %s", Path(blob_name).stem, e)
+                with _lock:
+                    counts['fail'] += 1
                 pbar.update(1)
-                logging.error("FAIL(dl): %s - %s", Path(blob_name).stem, err)
+                return blob_name, None
 
-            if _shutdown_event.is_set():
+        with ThreadPoolExecutor(max_workers=io_threads) as pool:
+            futures = {pool.submit(_dl_one, bn): bn for bn in pending}
+            for f in as_completed(futures):
+                blob_name, local_path = f.result()
+                if local_path and not _shutdown_event.is_set():
+                    download_q.put((blob_name, local_path))  # 阻塞直到有空位
+        # 放 num_workers 个毒丸让所有处理线程退出
+        for _ in range(num_workers):
+            download_q.put(_SENTINEL)
+
+    # ── 单个处理 worker ──
+    def _process_worker():
+        """从 download_q 取图片，处理完放到 upload_q"""
+        while not _shutdown_event.is_set():
+            item = download_q.get()
+            if item is _SENTINEL:
                 break
-
-            # ── Phase 2: 批量处理 (GPU + CPU) ──
-            process_results = {}  # basename -> (ok, msg, wid)
-            # 动态 wid 分配: 用队列保证同一时刻每个 wid 只被一个 worker 使用
-            free_wids: queue.Queue[int] = queue.Queue()
-            for w in range(num_workers):
-                free_wids.put(w)
-
-            def _process_one(blob_name: str, local_path: str) -> Tuple[str, bool, str, int]:
-                wid = free_wids.get()  # 阻塞直到有空闲 wid
-                basename = Path(blob_name).stem
-                w_output = buffer_path / f'w{wid}' / 'output'
-                try:
-                    config = copy.deepcopy(base_config)
-                    result = process_panorama(local_path, str(w_output), config)
-                    if not result.get('success'):
-                        return basename, False, result.get('error', 'unknown'), wid
-                    return basename, True, '', wid
-                except Exception as e:
-                    return basename, False, str(e), wid
-                finally:
-                    free_wids.put(wid)  # 归还 wid
-
-            t0 = time.time()
-            with ThreadPoolExecutor(max_workers=num_workers) as proc_pool:
-                futures = {
-                    proc_pool.submit(_process_one, bn, lp): bn
-                    for bn, lp in local_files.items()
-                }
-                for f in as_completed(futures):
-                    try:
-                        basename, ok, msg, wid = f.result()
-                    except Exception as e:
-                        basename = Path(futures[f]).stem
-                        ok, msg, wid = False, str(e), -1
-                    process_results[basename] = (ok, msg, wid)
-                    if ok:
-                        logging.info("PROC OK: %s", basename)
-                    else:
-                        fail_count += 1
-                        pbar.update(1)
-                        pbar.set_postfix_str(f"ok={success_count} fail={fail_count}")
-                        logging.error("FAIL(proc): %s - %s", basename, msg)
-            logging.info("处理完成: %d 成功, %d 失败, %.1fs",
-                         sum(1 for ok, _, _ in process_results.values() if ok),
-                         sum(1 for ok, _, _ in process_results.values() if not ok),
-                         time.time() - t0)
-
-            # 清理输入文件 (处理完了就不需要了)
-            for local_path in local_files.values():
+            blob_name, local_path = item
+            basename = Path(blob_name).stem
+            wid = free_wids.get()
+            w_output = buffer_path / f'w{wid}' / 'output'
+            try:
+                config = copy.deepcopy(base_config)
+                result = process_panorama(local_path, str(w_output), config)
+                if result.get('success'):
+                    upload_q.put((basename, wid))
+                    logging.info("PROC OK: %s", basename)
+                else:
+                    logging.error("FAIL(proc): %s - %s", basename, result.get('error', 'unknown'))
+                    with _lock:
+                        counts['fail'] += 1
+                    pbar.update(1)
+            except Exception as e:
+                logging.error("FAIL(proc): %s - %s", basename, e)
+                with _lock:
+                    counts['fail'] += 1
+                pbar.update(1)
+            finally:
+                free_wids.put(wid)
+                # 删除输入文件
                 with contextlib.suppress(OSError):
                     os.unlink(local_path)
 
-            if _shutdown_event.is_set():
-                break
-
-            # ── Phase 3: 批量上传 ──
-            to_upload = [(bn, wid) for bn, (ok, _, wid) in process_results.items() if ok]
-
-            def _upload_one(args_tuple) -> Tuple[str, bool, str, int]:
-                basename, wid = args_tuple
-                w_output = str(buffer_path / f'w{wid}' / 'output')
-                try:
-                    n = upload_panorama_views(gcs_bucket, w_output, basename, gcs_prefix)
-                    return basename, True, f"{n} files", wid
-                except Exception as e:
-                    return basename, False, str(e), wid
-
-            t0 = time.time()
-            with ThreadPoolExecutor(max_workers=io_threads) as ul_pool:
-                ul_futures = {
-                    ul_pool.submit(_upload_one, item): item[0]
-                    for item in to_upload
-                }
-                for f in as_completed(ul_futures):
-                    try:
-                        basename, ok, msg, wid = f.result()
-                    except Exception as e:
-                        basename = ul_futures[f]
-                        ok, msg, wid = False, str(e), -1
-                    if ok:
-                        success_count += 1
-                        logging.info("OK: %s (%s)", basename, msg)
-                    else:
-                        fail_count += 1
-                        logging.error("FAIL(ul): %s - %s", basename, msg)
-                    pbar.update(1)
-                    pbar.set_postfix_str(f"ok={success_count} fail={fail_count}")
-            logging.info("上传完成: %.1fs", time.time() - t0)
-
-            # ── Phase 4: 清理输出文件 ──
-            for basename, (ok, _, wid) in process_results.items():
-                w_output = buffer_path / f'w{wid}' / 'output'
+    # ── 上传线程 ──
+    def _uploader():
+        """从 upload_q 取结果，用线程池并行上传"""
+        def _ul_one(item):
+            basename, wid = item
+            w_output = str(buffer_path / f'w{wid}' / 'output')
+            try:
+                n = upload_panorama_views(gcs_bucket, w_output, basename, gcs_prefix)
+                logging.info("OK: %s (%d files)", basename, n)
+                with _lock:
+                    counts['success'] += 1
+            except Exception as e:
+                logging.error("FAIL(ul): %s - %s", basename, e)
+                with _lock:
+                    counts['fail'] += 1
+            finally:
+                # 清理输出文件
+                w_output_path = buffer_path / f'w{wid}' / 'output'
                 for view in ('left', 'front', 'right'):
-                    vd = w_output / f"{basename}_{view}"
+                    vd = w_output_path / f"{basename}_{view}"
                     if vd.exists():
                         shutil.rmtree(vd, ignore_errors=True)
+                pbar.update(1)
+                with _lock:
+                    pbar.set_postfix_str(f"ok={counts['success']} fail={counts['fail']}")
+
+        with ThreadPoolExecutor(max_workers=io_threads) as pool:
+            futures = []
+            while True:
+                item = upload_q.get()
+                if item is _SENTINEL:
+                    break
+                futures.append(pool.submit(_ul_one, item))
+            # 等所有上传完成
+            for f in as_completed(futures):
+                f.result()  # 异常已在 _ul_one 内部处理
+
+    try:
+        # 启动三个阶段的线程
+        dl_thread = threading.Thread(target=_downloader, name='downloader')
+        proc_threads = [
+            threading.Thread(target=_process_worker, name=f'worker-{i}')
+            for i in range(num_workers)
+        ]
+        ul_thread = threading.Thread(target=_uploader, name='uploader')
+
+        dl_thread.start()
+        for t in proc_threads:
+            t.start()
+        ul_thread.start()
+
+        # 等待所有处理线程完成
+        dl_thread.join()
+        for t in proc_threads:
+            t.join()
+
+        # 处理线程全部退出 → 上传队列不会再有新任务 → 发毒丸
+        upload_q.put(_SENTINEL)
+        ul_thread.join()
 
     finally:
         pbar.close()
@@ -410,19 +411,19 @@ def cloud_batch_process(
     interrupted = _shutdown_event.is_set()
 
     logging.info("=" * 60)
-    logging.info("批量处理%s", "被中断" if interrupted else "完成")
+    logging.info("流水线处理%s", "被中断" if interrupted else "完成")
     logging.info("  之前已完成: %d", skip_count)
-    logging.info("  本次成功: %d", success_count)
-    logging.info("  本次失败: %d", fail_count)
+    logging.info("  本次成功: %d", counts['success'])
+    logging.info("  本次失败: %d", counts['fail'])
     logging.info("  耗时: %.0fs (%.1f hr)", total_time, total_time / 3600)
-    if success_count > 0:
-        logging.info("  平均: %.1fs/张", total_time / success_count)
-        logging.info("  速率: %.0f 张/hr", success_count / total_time * 3600)
+    if counts['success'] > 0:
+        logging.info("  平均: %.1fs/张", total_time / counts['success'])
+        logging.info("  速率: %.0f 张/hr", counts['success'] / total_time * 3600)
     logging.info("=" * 60)
 
     return {
-        'success': success_count,
-        'fail': fail_count,
+        'success': counts['success'],
+        'fail': counts['fail'],
         'skipped': skip_count,
         'interrupted': interrupted,
     }
@@ -467,13 +468,20 @@ def main():
     proc.add_argument('--depth-res', type=int, default=672, help='深度处理分辨率 (504/672/1008)')
     proc.add_argument('--png-compression', type=int, default=6, help='PNG 压缩等级 0-9 (默认 6)')
     proc.add_argument('--workers', type=int, default=4, help='并行处理 worker 数 (默认 4)')
-    proc.add_argument('--batch-size', type=int, default=100,
-                       help='每批下载/处理/上传的图片数 (默认 100)')
     proc.add_argument('--io-threads', type=int, default=16,
                        help='下载/上传并行线程数 (默认 16)')
+    proc.add_argument('--prefetch', type=int, default=50,
+                       help='预下载队列大小，控制本地缓存图片数 (默认 50)')
     proc.add_argument('--gpu-concurrency', type=int, default=2,
                        help='GPU 并发推理数 (默认 2, 24GB GPU 可设 3)')
     proc.add_argument('--refresh-cache', action='store_true', help='强制重新列出 Azure blob (忽略缓存)')
+
+    # 多实例去重
+    mi = parser.add_argument_group('Multi-instance (多实例并行)')
+    mi.add_argument('--instance-id', type=int, default=0,
+                    help='当前实例编号 (从 0 开始, 默认 0)')
+    mi.add_argument('--total-instances', type=int, default=1,
+                    help='总实例数 (默认 1 = 单实例)')
 
     args = parser.parse_args()
 
@@ -506,8 +514,14 @@ def main():
     set_gpu_concurrency(args.gpu_concurrency)
     logging.info("GPU concurrency: %d", args.gpu_concurrency)
 
+    # --- 验证多实例参数 ---
+    if args.instance_id < 0 or args.instance_id >= args.total_instances:
+        parser.error(f"--instance-id 必须在 [0, {args.total_instances - 1}] 范围内")
+    if args.total_instances > 1:
+        logging.info("多实例模式: instance %d / %d", args.instance_id, args.total_instances)
+
     # --- 开跑 ---
-    result = cloud_batch_process(
+    result = cloud_pipeline_process(
         azure_client=azure_client,
         gcs_bucket=gcs_bucket,
         gcs_prefix=args.gcs_prefix,
@@ -517,8 +531,10 @@ def main():
         config_overrides=config_overrides,
         force_refresh=args.refresh_cache,
         num_workers=args.workers,
-        batch_size=args.batch_size,
         io_threads=args.io_threads,
+        prefetch=args.prefetch,
+        instance_id=args.instance_id,
+        total_instances=args.total_instances,
     )
 
     sys.exit(0 if not result['interrupted'] else 1)
