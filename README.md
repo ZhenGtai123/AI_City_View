@@ -25,20 +25,20 @@ cd AI_City_View
 conda create -n cityview python=3.10 -y
 conda activate cityview
 
-# PyTorch (CUDA 12.4)
+# 1. 先装 PyTorch CUDA 版（必须在 requirements.txt 之前！）
 pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124
 
-# 项目依赖
-pip install -r requirements.txt
-pip install xformers
-pip install fastapi uvicorn python-multipart
-pip install git+https://github.com/ByteDance-Seed/depth-anything-3.git
-```
-
-验证 GPU：
-
-```bash
+# 2. 验证 GPU（必须显示 True 再继续）
 python -c "import torch; print(torch.cuda.is_available())"
+
+# 3. 装项目依赖（不会覆盖已装的 PyTorch）
+pip install -r requirements.txt
+
+# 4. 装 Depth Anything V3（从 GitHub）
+pip install git+https://github.com/ByteDance-Seed/depth-anything-3.git
+
+# 5. 可选加速
+pip install xformers
 ```
 
 > 第一次启动会自动下载 AI 模型（OneFormer ~1.2GB + DA3 ~1.4GB），之后会缓存到本地。
