@@ -67,15 +67,39 @@ OUTPUTS_DIR.mkdir(exist_ok=True)
 OUTPUT_RETENTION_SECONDS = 3600  # 1 hour
 CLEANUP_INTERVAL_SECONDS = 600  # 10 minutes
 
-# The 9 key images to hex-encode in JSON responses
+# All images to hex-encode in JSON responses (23 from stage6 + sky_mask + semantic_raw)
 HEX_IMAGE_KEYS = [
+    # 基础图
     "semantic_map",
     "depth_map",
     "openness_map",
     "fmb_map",
+    "original",
+    # FMB 掩码
     "foreground_map",
     "middleground_map",
     "background_map",
+    # 语义 × FMB
+    "semantic_foreground",
+    "semantic_middleground",
+    "semantic_background",
+    # 深度 × FMB
+    "depth_foreground",
+    "depth_middleground",
+    "depth_background",
+    # 开放度 × FMB
+    "openness_foreground",
+    "openness_middleground",
+    "openness_background",
+    # 原图 × FMB
+    "original_foreground",
+    "original_middleground",
+    "original_background",
+    # FMB × FMB
+    "fmb_foreground",
+    "fmb_middleground",
+    "fmb_background",
+    # 额外
     "sky_mask",
     "semantic_raw",
 ]
