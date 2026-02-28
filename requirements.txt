@@ -14,6 +14,10 @@ torchaudio>=2.0.0
 transformers>=4.30.0
 accelerate>=0.20.0
 
+# Pipeline 依赖
+scikit-learn>=1.3.0
+scipy>=1.10.0
+
 # 深度估计 (Depth Anything V3, 需从 GitHub 安装)
 # pip install git+https://github.com/ByteDance-Seed/depth-anything-3.git
 
