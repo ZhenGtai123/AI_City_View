@@ -2,11 +2,11 @@
 
 # 核心库
 opencv-python>=4.8.0
-numpy>=1.24.0
+numpy>=1.24.0,<2
 Pillow>=10.0.0
 
-# PyTorch — 不要在这里装！必须先单独安装 CUDA 版本:
-# pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124
+# PyTorch — 不在这里装！按 README 步骤，最后用 --force-reinstall 装 CUDA 版:
+# pip install --force-reinstall torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124
 
 # 语义分割 (OneFormer ADE20K)
 transformers>=4.30.0
