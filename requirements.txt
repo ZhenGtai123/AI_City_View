@@ -1,35 +1,26 @@
-# 视觉分析Pipeline依赖包
+# AI City View - 依赖包
 
 # 核心库
 opencv-python>=4.8.0
 numpy>=1.24.0
 Pillow>=10.0.0
 
-# AI模型 - 精度优先方案 ✅
-# PyTorch (必需)
+# PyTorch (建议通过 --index-url 单独安装 CUDA 版本，见 README)
 torch>=2.0.0
 torchvision>=0.15.0
 torchaudio>=2.0.0
 
-# SAM 2.1 + LangSAM (语义分割)
-# 安装方法见 INSTALLATION.md
-# 注意: "lang-sam" 在某些环境/镜像上可能没有 PyPI 发行版；此处使用 Git 安装。
-git+https://github.com/luca-medeiros/lang-segment-anything.git
-
-# Depth Anything V2 (深度估计)
-# 安装方法见 INSTALLATION.md
-# 需要从GitHub安装: https://github.com/DepthAnything/Depth-Anything-V2
-transformers>=4.30.0  # Hugging Face 版本
+# 语义分割 (OneFormer ADE20K)
+transformers>=4.30.0
 accelerate>=0.20.0
 
-# 工具库
-tqdm>=4.65.0  # 进度条
-pathlib2>=2.3.7  # 路径处理 (Python < 3.6)
+# 深度估计 (Depth Anything V3, 需从 GitHub 安装)
+# pip install git+https://github.com/ByteDance-Seed/depth-anything-3.git
 
-# 可选: 性能优化
-# numba>=0.57.0  # JIT加速
-# opencv-contrib-python>=4.8.0  # 额外功能
+# FastAPI Server
+fastapi>=0.100.0
+uvicorn>=0.23.0
+python-multipart>=0.0.6
 
-# Gradio 前端
-gradio>=4.0.0
-
+# 可选: GPU 加速
+# pip install xformers
