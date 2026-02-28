@@ -24,6 +24,7 @@ import io
 import json
 import logging
 import os
+import signal
 import shutil
 import sys
 import time
@@ -487,6 +488,9 @@ async def analyze(
     loop = asyncio.get_running_loop()
     try:
         result = await loop.run_in_executor(None, _run_pipeline, image, config, job_id)
+    except asyncio.CancelledError:
+        logger.warning("[%s] Request cancelled (server shutting down)", job_id)
+        raise
     except Exception as e:
         logger.error("Pipeline error: %s", e, exc_info=True)
         try:
@@ -540,6 +544,9 @@ async def analyze_panorama(
         try:
             result = await loop.run_in_executor(None, _run_pipeline, view_img, config, job_id)
             results[view_name] = result
+        except asyncio.CancelledError:
+            logger.warning("[%s] Panorama request cancelled (server shutting down)", job_id)
+            raise
         except Exception as e:
             logger.error("Panorama view %s error: %s", view_name, e, exc_info=True)
             results[view_name] = {"status": "error", "error": str(e)}
@@ -603,6 +610,19 @@ async def download_file(job_id: str, filename: str):
 
 if __name__ == "__main__":
     import uvicorn
+
+    # Second Ctrl+C forces immediate exit (kills stuck pipeline threads)
+    _shutting_down = False
+
+    def _force_exit_handler(signum, frame):
+        global _shutting_down
+        if _shutting_down:
+            logger.warning("Force exit (second Ctrl+C)")
+            os._exit(1)
+        _shutting_down = True
+        raise KeyboardInterrupt
+
+    signal.signal(signal.SIGINT, _force_exit_handler)
 
     port = int(os.environ.get("PORT", 8000))
     logger.info("Starting Vision API server on port %d ...", port)
