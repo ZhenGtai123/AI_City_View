@@ -42,14 +42,19 @@ def batch_process_panoramas(
     input_path = Path(input_dir)
     
     if not input_path.exists():
-        print(f"❌ 输入路径不存在: {input_dir}")
+        print(f"[FAIL] 输入路径不存在: {input_dir}")
         return
     
-    # 获取所有图片文件
+    # 获取所有图片文件（去重，Windows上大小写不敏感会重复匹配）
     image_files: List[Path] = []
+    seen = set()
     for ext in ['*.jpg', '*.jpeg', '*.png', '*.JPG', '*.JPEG', '*.PNG']:
-        image_files.extend(input_path.glob(ext))
-    
+        for f in input_path.glob(ext):
+            key = str(f).lower()
+            if key not in seen:
+                seen.add(key)
+                image_files.append(f)
+
     image_files = sorted(image_files)
     
     if limit > 0:
@@ -60,7 +65,7 @@ def batch_process_panoramas(
     print(f"输入目录: {input_dir}")
     print(f"输出目录: {output_root}")
     if workers > 1:
-        print(f"🚀 多线程模式：{workers} 个并行worker")
+        print(f">> 多线程模式：{workers} 个并行worker")
     print(f"{'='*60}\n")
     
     # 获取配置
@@ -76,13 +81,13 @@ def batch_process_panoramas(
             print(f"\n[{idx}/{total}] 开始: {img_path.name}")
             result = process_panorama(str(img_path), output_root, config)
             if result['success']:
-                print(f"[{idx}/{total}] ✅ 完成: {img_path.name} ({result['total_time']:.2f}秒)")
+                print(f"[{idx}/{total}] [OK] 完成: {img_path.name} ({result['total_time']:.2f}秒)")
                 return {'success': True, 'name': img_path.name, 'time': result['total_time']}
             else:
-                print(f"[{idx}/{total}] ❌ 失败: {img_path.name} - {result.get('error', 'Unknown')}")
+                print(f"[{idx}/{total}] [FAIL] 失败: {img_path.name} - {result.get('error', 'Unknown')}")
                 return {'success': False, 'name': img_path.name, 'error': result.get('error')}
         except Exception as e:
-            print(f"[{idx}/{total}] ❌ 异常: {img_path.name} - {e}")
+            print(f"[{idx}/{total}] [FAIL] 异常: {img_path.name} - {e}")
             return {'success': False, 'name': img_path.name, 'error': str(e)}
     
     if workers > 1:
@@ -111,7 +116,7 @@ def batch_process_panoramas(
     total_time = time.time() - start_time
     
     print(f"\n{'='*60}")
-    print(f"✅ 批量处理完成！")
+    print(f"[OK] 批量处理完成！")
     print(f"  成功: {success_count}/{total}")
     print(f"  失败: {fail_count}/{total}")
     print(f"  总耗时: {total_time:.2f}秒")

@@ -84,12 +84,12 @@ def stage7_save_outputs(
         filename = f"{name}.png"
         filepath = output_path / filename
         try:
-            ok = cv2.imwrite(
-                str(filepath),
-                img,
+            ok, buf = cv2.imencode(
+                '.png', img,
                 [cv2.IMWRITE_PNG_COMPRESSION, png_compression],
             )
             if ok:
+                buf.tofile(str(filepath))
                 saved_files.append(str(filepath))
             else:
                 errors.append(f"保存失败: {filepath}")
