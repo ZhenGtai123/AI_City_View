@@ -73,10 +73,26 @@ python main.py <图片路径> <输出目录>
 python main.py full1.jpg output
 ```
 
-### 批量处理
+### 批量处理（本地）
 
 ```bash
 python batch_run.py /data/input /data/output --workers=2
+```
+
+### 云批量处理（Azure Blob → GPU VM → GCS）
+
+适合50万张级别的大规模处理。支持断点续跑、Spot 抢占优雅退出、下载/处理/上传三阶段流水线并行。
+
+```bash
+# 额外依赖
+pip install azure-storage-blob google-cloud-storage
+
+# 运行
+python cloud_batch_run.py \
+  --azure-sas-url "https://account.blob.core.windows.net/container?sv=..." \
+  --gcs-bucket my-output-bucket \
+  --workers=4 \
+  --gpu-concurrency=2
 ```
 
 ---
@@ -227,7 +243,8 @@ output/
 AI_City_View/
 ├── server.py              # FastAPI API 入口
 ├── main.py                # 全景图处理核心逻辑
-├── batch_run.py           # 批量处理脚本
+├── batch_run.py           # 本地批量处理脚本
+├── cloud_batch_run.py     # 云批量处理 (Azure Blob → GCS)
 ├── pipeline/
 │   ├── stage1_preprocess.py        # 等距柱状投影裁剪
 │   ├── stage2_ai_inference.py      # OneFormer + DA3 (GPU)

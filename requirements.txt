@@ -26,5 +26,11 @@ fastapi>=0.100.0
 uvicorn>=0.23.0
 python-multipart>=0.0.6
 
+# 工具
+tqdm>=4.65.0
+
+# 云批量处理 (cloud_batch_run.py, 按需安装)
+# pip install azure-storage-blob google-cloud-storage
+
 # 可选: GPU 加速
 # pip install xformers
