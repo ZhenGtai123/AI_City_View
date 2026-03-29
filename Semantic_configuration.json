@@ -1,253 +1,902 @@
 [
   {
-    "name": "Sky",
-    "color": "#06E6E6",
-    "countable": 0,
-    "openness": 0
-  },
-  {
-    "name": "Lawn",
-    "color": "#04FA07",
-    "countable": 0,
-    "openness": 0
-  },
-  {
-    "name": "Herbaceous",
-    "color": "#FA7F04",
-    "countable": 1,
-    "openness": 0
-  },
-  {
-    "name": "Trees",
-    "color": "#04C803",
+    "name": "wall",
+    "color": "#787878",
     "countable": 1,
     "openness": 1
   },
   {
-    "name": "Shrubs",
-    "color": "#CCFF04",
-    "countable": 1,
-    "openness": 1
-  },
-  {
-    "name": "Water",
-    "color": "#0907E6",
-    "countable": 0,
-    "openness": 0
-  },
-  {
-    "name": "Land; Ground",
-    "color": "#787846",
-    "countable": 0,
-    "openness": 0
-  },
-  {
-    "name": "Building",
+    "name": "building;edifice",
     "color": "#B47878",
     "countable": 1,
     "openness": 1
   },
   {
-    "name": "Rock; stone",
-    "color": "#FF290A",
+    "name": "sky",
+    "color": "#06E6E6",
     "countable": 1,
-    "openness": 1
+    "openness": 0
   },
   {
-    "name": "People; Individuals; Someone; People and their belongings",
-    "color": "#96053D",
+    "name": "floor;flooring",
+    "color": "#503232",
     "countable": 1,
-    "openness": 1
+    "openness": 0
   },
   {
-    "name": "Wall",
-    "color": "#787878",
+    "name": "tree",
+    "color": "#04C803",
     "countable": 0,
     "openness": 1
   },
   {
-    "name": "Roads",
+    "name": "ceiling",
+    "color": "#787850",
+    "countable": 1,
+    "openness": 1
+  },
+  {
+    "name": "road;route",
     "color": "#8C8C8C",
-    "countable": 0,
+    "countable": 1,
     "openness": 0
   },
   {
-    "name": "Pavements; pavement, paths, gravel roads, dirt roads, not vehicle plazas",
+    "name": "bed",
+    "color": "#CC05FF",
+    "countable": 0,
+    "openness": 1
+  },
+  {
+    "name": "windowpane;window",
+    "color": "#E6E6E6",
+    "countable": 0,
+    "openness": 1
+  },
+  {
+    "name": "grass",
+    "color": "#04FA07",
+    "countable": 1,
+    "openness": 0
+  },
+  {
+    "name": "cabinet",
+    "color": "#E005FF",
+    "countable": 0,
+    "openness": 1
+  },
+  {
+    "name": "sidewalk;pavement",
     "color": "#EBFF07",
-    "countable": 0,
+    "countable": 1,
     "openness": 0
   },
   {
-    "name": "Bridge",
-    "color": "#FF5200",
+    "name": "person;individual;someone;somebody;mortal;soul",
+    "color": "#96053D",
     "countable": 0,
+    "openness": 1
+  },
+  {
+    "name": "earth;ground",
+    "color": "#787846",
+    "countable": 1,
     "openness": 0
   },
   {
-    "name": "Automobiles, cars, motor vehicles, carriages",
-    "color": "#0066C8",
+    "name": "door;double;door",
+    "color": "#08FF33",
+    "countable": 0,
+    "openness": 1
+  },
+  {
+    "name": "table",
+    "color": "#FF0652",
+    "countable": 0,
+    "openness": 1
+  },
+  {
+    "name": "mountain;mount",
+    "color": "#8FFF8C",
     "countable": 1,
     "openness": 1
   },
   {
-    "name": "Chairs",
+    "name": "plant;flora;plant;life",
+    "color": "#CCFF04",
+    "countable": 0,
+    "openness": 1
+  },
+  {
+    "name": "curtain;drape;drapery;mantle;pall",
+    "color": "#FF3307",
+    "countable": 0,
+    "openness": 1
+  },
+  {
+    "name": "chair",
     "color": "#CC4603",
-    "countable": 1,
-    "openness": 1
-  },
-  {
-    "name": "Bases, plinths, pedestals, bases for sculptures and planters",
-    "color": "#FF1F00",
-    "countable": 1,
-    "openness": 1
-  },
-  {
-    "name": "Steps, curbs (kerbs, berms, stepping stones), hard barges, retaining walls",
-    "color": "#FFE000",
     "countable": 0,
     "openness": 1
   },
   {
-    "name": "Fences",
+    "name": "car;auto;automobile;machine;motorcar",
+    "color": "#0066C8",
+    "countable": 0,
+    "openness": 1
+  },
+  {
+    "name": "water",
+    "color": "#3DE6FA",
+    "countable": 1,
+    "openness": 0
+  },
+  {
+    "name": "painting;picture",
+    "color": "#FF0633",
+    "countable": 0,
+    "openness": 1
+  },
+  {
+    "name": "sofa;couch;lounge",
+    "color": "#0B66FF",
+    "countable": 0,
+    "openness": 1
+  },
+  {
+    "name": "shelf",
+    "color": "#FF0747",
+    "countable": 0,
+    "openness": 1
+  },
+  {
+    "name": "house",
+    "color": "#FF09E0",
+    "countable": 1,
+    "openness": 1
+  },
+  {
+    "name": "sea",
+    "color": "#0907E6",
+    "countable": 1,
+    "openness": 0
+  },
+  {
+    "name": "mirror",
+    "color": "#DCDCDC",
+    "countable": 0,
+    "openness": 1
+  },
+  {
+    "name": "rug;carpet;carpeting",
+    "color": "#FF095C",
+    "countable": 1,
+    "openness": 0
+  },
+  {
+    "name": "field",
+    "color": "#7009FF",
+    "countable": 1,
+    "openness": 0
+  },
+  {
+    "name": "armchair",
+    "color": "#08FFD6",
+    "countable": 0,
+    "openness": 1
+  },
+  {
+    "name": "seat",
+    "color": "#07FFE0",
+    "countable": 0,
+    "openness": 1
+  },
+  {
+    "name": "fence;fencing",
     "color": "#FFB806",
     "countable": 0,
     "openness": 1
   },
   {
-    "name": "Signs, plaques",
+    "name": "desk",
+    "color": "#0AFF47",
+    "countable": 0,
+    "openness": 1
+  },
+  {
+    "name": "rock;stone",
+    "color": "#FF290A",
+    "countable": 0,
+    "openness": 1
+  },
+  {
+    "name": "wardrobe;closet;press",
+    "color": "#07FFFF",
+    "countable": 0,
+    "openness": 1
+  },
+  {
+    "name": "lamp",
+    "color": "#E0FF08",
+    "countable": 0,
+    "openness": 1
+  },
+  {
+    "name": "bathtub;bathing;tub;bath;tub",
+    "color": "#6608FF",
+    "countable": 0,
+    "openness": 1
+  },
+  {
+    "name": "railing;rail",
+    "color": "#FF3D06",
+    "countable": 0,
+    "openness": 1
+  },
+  {
+    "name": "cushion",
+    "color": "#FFC207",
+    "countable": 0,
+    "openness": 1
+  },
+  {
+    "name": "base;pedestal;stand",
+    "color": "#FF7A08",
+    "countable": 0,
+    "openness": 1
+  },
+  {
+    "name": "box",
+    "color": "#00FF14",
+    "countable": 0,
+    "openness": 1
+  },
+  {
+    "name": "column;pillar",
+    "color": "#FF0829",
+    "countable": 0,
+    "openness": 1
+  },
+  {
+    "name": "signboard;sign",
     "color": "#FF0599",
+    "countable": 0,
+    "openness": 1
+  },
+  {
+    "name": "chest;of;drawers;chest;bureau;dresser",
+    "color": "#0633FF",
+    "countable": 0,
+    "openness": 1
+  },
+  {
+    "name": "counter",
+    "color": "#EB0CFF",
+    "countable": 0,
+    "openness": 1
+  },
+  {
+    "name": "sand",
+    "color": "#A09614",
+    "countable": 1,
+    "openness": 0
+  },
+  {
+    "name": "sink",
+    "color": "#00A3FF",
+    "countable": 0,
+    "openness": 1
+  },
+  {
+    "name": "skyscraper",
+    "color": "#8C8C8C",
     "countable": 1,
     "openness": 1
   },
   {
-    "name": "Bins",
-    "color": "#AD00FF",
+    "name": "fireplace;hearth;open;fireplace",
+    "color": "#FA0A0F",
+    "countable": 0,
+    "openness": 1
+  },
+  {
+    "name": "refrigerator;icebox",
+    "color": "#14FF00",
+    "countable": 0,
+    "openness": 1
+  },
+  {
+    "name": "grandstand;covered;stand",
+    "color": "#1FFF00",
     "countable": 1,
     "openness": 1
   },
   {
-    "name": "Towers",
+    "name": "path",
+    "color": "#FF1F00",
+    "countable": 1,
+    "openness": 0
+  },
+  {
+    "name": "stairs;steps",
+    "color": "#FFE000",
+    "countable": 0,
+    "openness": 0
+  },
+  {
+    "name": "runway",
+    "color": "#99FF00",
+    "countable": 1,
+    "openness": 0
+  },
+  {
+    "name": "case;display;case;showcase;vitrine",
+    "color": "#0000FF",
+    "countable": 0,
+    "openness": 1
+  },
+  {
+    "name": "pool;table;billiard;table;snooker;table",
+    "color": "#FF4700",
+    "countable": 0,
+    "openness": 1
+  },
+  {
+    "name": "pillow",
+    "color": "#00EBFF",
+    "countable": 0,
+    "openness": 1
+  },
+  {
+    "name": "screen;door;screen",
+    "color": "#00ADFF",
+    "countable": 0,
+    "openness": 1
+  },
+  {
+    "name": "stairway;staircase",
+    "color": "#1F00FF",
+    "countable": 1,
+    "openness": 0
+  },
+  {
+    "name": "river",
+    "color": "#0BC8C8",
+    "countable": 1,
+    "openness": 0
+  },
+  {
+    "name": "bridge;span",
+    "color": "#FF5200",
+    "countable": 1,
+    "openness": 1
+  },
+  {
+    "name": "bookcase",
+    "color": "#00FFF5",
+    "countable": 0,
+    "openness": 1
+  },
+  {
+    "name": "blind;screen",
+    "color": "#003DFF",
+    "countable": 0,
+    "openness": 1
+  },
+  {
+    "name": "coffee table",
+    "color": "#00FF70",
+    "countable": 0,
+    "openness": 1
+  },
+  {
+    "name": "toilet;can;commode;crapper;pot;potty;stool;throne",
+    "color": "#00FF85",
+    "countable": 0,
+    "openness": 1
+  },
+  {
+    "name": "flower",
+    "color": "#FF0000",
+    "countable": 0,
+    "openness": 1
+  },
+  {
+    "name": "book",
+    "color": "#FFA300",
+    "countable": 0,
+    "openness": 1
+  },
+  {
+    "name": "hill",
+    "color": "#FF6600",
+    "countable": 1,
+    "openness": 1
+  },
+  {
+    "name": "bench",
+    "color": "#C2FF00",
+    "countable": 0,
+    "openness": 1
+  },
+  {
+    "name": "countertop",
+    "color": "#008FFF",
+    "countable": 0,
+    "openness": 1
+  },
+  {
+    "name": "stove;kitchen;stove;range;kitchen;range;cooking;stove",
+    "color": "#33FF00",
+    "countable": 0,
+    "openness": 1
+  },
+  {
+    "name": "palm;palm;tree",
+    "color": "#0052FF",
+    "countable": 0,
+    "openness": 1
+  },
+  {
+    "name": "kitchen;island",
+    "color": "#00FF29",
+    "countable": 0,
+    "openness": 1
+  },
+  {
+    "name": "computer;computing;machine;computing;device;data;processor;electronic;computer;information;processing;system",
+    "color": "#00FFAD",
+    "countable": 0,
+    "openness": 1
+  },
+  {
+    "name": "swivel;chair",
+    "color": "#0A00FF",
+    "countable": 0,
+    "openness": 1
+  },
+  {
+    "name": "boat",
+    "color": "#ADFF00",
+    "countable": 0,
+    "openness": 1
+  },
+  {
+    "name": "bar",
+    "color": "#00FF99",
+    "countable": 0,
+    "openness": 1
+  },
+  {
+    "name": "arcade;machine",
+    "color": "#FF5C00",
+    "countable": 0,
+    "openness": 1
+  },
+  {
+    "name": "hovel;hut;hutch;shack;shanty",
+    "color": "#FF00FF",
+    "countable": 1,
+    "openness": 1
+  },
+  {
+    "name": "bus;autobus;coach;charabanc;double-decker;jitney;motorbus;motorcoach;omnibus;passenger;vehicle",
+    "color": "#FF00F5",
+    "countable": 0,
+    "openness": 1
+  },
+  {
+    "name": "towel",
+    "color": "#FF0066",
+    "countable": 0,
+    "openness": 1
+  },
+  {
+    "name": "light;light;source",
+    "color": "#FFAD00",
+    "countable": 0,
+    "openness": 1
+  },
+  {
+    "name": "truck;motortruck",
+    "color": "#FF0014",
+    "countable": 0,
+    "openness": 1
+  },
+  {
+    "name": "tower",
     "color": "#FFB8B8",
     "countable": 1,
     "openness": 1
   },
   {
-    "name": "Awnings; Shades, Pavilions, Structures",
+    "name": "chandelier;pendant;pendent",
+    "color": "#001FFF",
+    "countable": 0,
+    "openness": 1
+  },
+  {
+    "name": "awning;sunshade;sunblind",
     "color": "#00FF3D",
-    "countable": 1,
+    "countable": 0,
     "openness": 1
   },
   {
-    "name": "Street Lights, Street Lamps",
+    "name": "streetlight;street lamp",
     "color": "#0047FF",
+    "countable": 0,
+    "openness": 1
+  },
+  {
+    "name": "booth;cubicle;stall;kiosk",
+    "color": "#FF00CC",
+    "countable": 0,
+    "openness": 1
+  },
+  {
+    "name": "television;television;receiver;television;set;tv;tv;set;idiot;box;boob;tube;telly;goggle;box",
+    "color": "#00FFC2",
+    "countable": 0,
+    "openness": 1
+  },
+  {
+    "name": "airplane;aeroplane;plane",
+    "color": "#00FF52",
+    "countable": 0,
+    "openness": 1
+  },
+  {
+    "name": "dirt;track",
+    "color": "#000AFF",
+    "countable": 1,
+    "openness": 0
+  },
+  {
+    "name": "apparel;wearing;apparel;dress;clothes",
+    "color": "#0070FF",
+    "countable": 0,
+    "openness": 1
+  },
+  {
+    "name": "pole",
+    "color": "#3300FF",
+    "countable": 0,
+    "openness": 1
+  },
+  {
+    "name": "land;ground;soil",
+    "color": "#00C2FF",
+    "countable": 1,
+    "openness": 0
+  },
+  {
+    "name": "bannister;banister;balustrade;balusters;handrail",
+    "color": "#007AFF",
+    "countable": 0,
+    "openness": 1
+  },
+  {
+    "name": "escalator;moving;staircase;moving;stairway",
+    "color": "#00FFA3",
+    "countable": 1,
+    "openness": 0
+  },
+  {
+    "name": "ottoman;pouf;pouffe;puff;hassock",
+    "color": "#FF9900",
+    "countable": 0,
+    "openness": 1
+  },
+  {
+    "name": "bottle",
+    "color": "#00FF0A",
+    "countable": 0,
+    "openness": 1
+  },
+  {
+    "name": "buffet;counter;sideboard",
+    "color": "#FF7000",
+    "countable": 0,
+    "openness": 1
+  },
+  {
+    "name": "poster;posting;placard;notice;bill;card",
+    "color": "#8FFF00",
+    "countable": 0,
+    "openness": 1
+  },
+  {
+    "name": "stage",
+    "color": "#5200FF",
     "countable": 1,
     "openness": 1
   },
   {
-    "name": "Boat",
+    "name": "van",
+    "color": "#A3FF00",
+    "countable": 0,
+    "openness": 1
+  },
+  {
+    "name": "ship",
     "color": "#FFEB00",
-    "countable": 1,
+    "countable": 0,
     "openness": 1
   },
   {
-    "name": "Fountains",
+    "name": "fountain",
     "color": "#08B8AA",
+    "countable": 0,
+    "openness": 0
+  },
+  {
+    "name": "conveyer;belt;conveyor;belt;conveyer;conveyor;transporter",
+    "color": "#8500FF",
     "countable": 1,
     "openness": 0
   },
   {
-    "name": "Bicycles, Pedal Bikes",
+    "name": "canopy",
+    "color": "#00FF5C",
+    "countable": 0,
+    "openness": 1
+  },
+  {
+    "name": "washer;automatic;washer;washing;machine",
+    "color": "#B800FF",
+    "countable": 0,
+    "openness": 1
+  },
+  {
+    "name": "plaything;toy",
+    "color": "#FF001F",
+    "countable": 0,
+    "openness": 1
+  },
+  {
+    "name": "swimming;pool;swimming;bath;natatorium",
+    "color": "#00B8FF",
+    "countable": 1,
+    "openness": 0
+  },
+  {
+    "name": "stool",
+    "color": "#00D6FF",
+    "countable": 0,
+    "openness": 1
+  },
+  {
+    "name": "barrel;cask",
+    "color": "#FF0070",
+    "countable": 0,
+    "openness": 1
+  },
+  {
+    "name": "basket;handbasket",
+    "color": "#5CFF00",
+    "countable": 0,
+    "openness": 1
+  },
+  {
+    "name": "waterfall;falls",
+    "color": "#00E0FF",
+    "countable": 1,
+    "openness": 0
+  },
+  {
+    "name": "tent;collapsible;shelter",
+    "color": "#70E0FF",
+    "countable": 0,
+    "openness": 1
+  },
+  {
+    "name": "bag",
+    "color": "#46B8A0",
+    "countable": 0,
+    "openness": 1
+  },
+  {
+    "name": "minibike;motorbike",
+    "color": "#A300FF",
+    "countable": 0,
+    "openness": 1
+  },
+  {
+    "name": "cradle",
+    "color": "#9900FF",
+    "countable": 0,
+    "openness": 1
+  },
+  {
+    "name": "oven",
+    "color": "#47FF00",
+    "countable": 0,
+    "openness": 1
+  },
+  {
+    "name": "ball",
+    "color": "#FF00A3",
+    "countable": 0,
+    "openness": 1
+  },
+  {
+    "name": "food;solid;food",
+    "color": "#FFCC00",
+    "countable": 0,
+    "openness": 1
+  },
+  {
+    "name": "step;stair",
+    "color": "#FF008F",
+    "countable": 0,
+    "openness": 0
+  },
+  {
+    "name": "tank;storage;tank",
+    "color": "#00FFEB",
+    "countable": 0,
+    "openness": 1
+  },
+  {
+    "name": "trade;name;brand;name;brand;marque",
+    "color": "#85FF00",
+    "countable": 0,
+    "openness": 1
+  },
+  {
+    "name": "microwave;microwave;oven",
+    "color": "#FF00EB",
+    "countable": 0,
+    "openness": 1
+  },
+  {
+    "name": "pot;flowerpot",
+    "color": "#F500FF",
+    "countable": 0,
+    "openness": 1
+  },
+  {
+    "name": "animal;animate;being;beast;brute;creature;fauna",
+    "color": "#FF007A",
+    "countable": 0,
+    "openness": 1
+  },
+  {
+    "name": "bicycle;bike;wheel;cycle",
     "color": "#FFF500",
-    "countable": 1,
+    "countable": 0,
     "openness": 1
   },
   {
-    "name": "Sculptures, Outdoor Vignettes",
+    "name": "lake",
+    "color": "#0ABED4",
+    "countable": 1,
+    "openness": 0
+  },
+  {
+    "name": "dishwasher;dish;washer;dishwashing;machine",
+    "color": "#D6FF00",
+    "countable": 0,
+    "openness": 1
+  },
+  {
+    "name": "screen;silver;screen;projection;screen",
+    "color": "#00CCFF",
+    "countable": 0,
+    "openness": 1
+  },
+  {
+    "name": "blanket;cover",
+    "color": "#1400FF",
+    "countable": 0,
+    "openness": 1
+  },
+  {
+    "name": "sculpture",
     "color": "#FFFF00",
-    "countable": 1,
+    "countable": 0,
     "openness": 1
   },
   {
-    "name": "Piers, Docks",
+    "name": "hood;exhaust;hood",
+    "color": "#0099FF",
+    "countable": 0,
+    "openness": 1
+  },
+  {
+    "name": "sconce",
+    "color": "#0029FF",
+    "countable": 0,
+    "openness": 1
+  },
+  {
+    "name": "vase",
+    "color": "#00FFCC",
+    "countable": 0,
+    "openness": 1
+  },
+  {
+    "name": "traffic light",
+    "color": "#2900FF",
+    "countable": 0,
+    "openness": 1
+  },
+  {
+    "name": "tray",
+    "color": "#29FF00",
+    "countable": 0,
+    "openness": 1
+  },
+  {
+    "name": "trash can",
+    "color": "#AD00FF",
+    "countable": 0,
+    "openness": 1
+  },
+  {
+    "name": "fan",
+    "color": "#00F5FF",
+    "countable": 0,
+    "openness": 1
+  },
+  {
+    "name": "pier;wharf;wharfage;dock",
     "color": "#4700FF",
+    "countable": 1,
+    "openness": 1
+  },
+  {
+    "name": "crt;screen",
+    "color": "#7A00FF",
     "countable": 0,
-    "openness": 0
-  },
-  {
-    "name": "Aquatic plants (on the water)",
-    "color": "#4EFF00",
-    "countable": 1,
-    "openness": 0
-  },
-  {
-    "name": "Green-covered buildings and structures",
-    "color": "#00FF4E",
-    "countable": 1,
-    "openness": 0
-  },
-  {
-    "name": "Couplets",
-    "color": "#82513E",
-    "countable": 1,
     "openness": 1
   },
   {
-    "name": "Riverbanks",
-    "color": "#E2C8A0",
+    "name": "plate",
+    "color": "#00FFB8",
     "countable": 0,
-    "openness": 0
+    "openness": 1
   },
   {
-    "name": "Hills, mountains",
-    "color": "#8FFF8C",
+    "name": "monitor;monitoring;device",
+    "color": "#005CFF",
     "countable": 0,
-    "openness": 0
-  },
-  {
-    "name": "Construction equipment",
-    "color": "#FF7104",
-    "countable": 1,
     "openness": 1
   },
   {
-    "name": "Poles",
-    "color": "#B5A6AE",
-    "countable": 1,
-    "openness": 1
-  },
-  {
-    "name": "Animal",
-    "color": "#6EDCA7",
-    "countable": 1,
-    "openness": 1
-  },
-  {
-    "name": "Monuments",
-    "color": "#484846",
-    "countable": 1,
-    "openness": 1
-  },
-  {
-    "name": "Doors",
-    "color": "#36283B",
-    "countable": 1,
-    "openness": 1
-  },
-  {
-    "name": "Outdoor sports equipment",
-    "color": "#37393A",
-    "countable": 1,
-    "openness": 1
-  },
-  {
-    "name": "Waterfalls",
-    "color": "#27C4C4",
+    "name": "bulletin;board;notice;board",
+    "color": "#B8FF00",
     "countable": 0,
-    "openness": 0
+    "openness": 1
   },
-  { "name": "Pavilion",
-    "color": "#FFD000",
-    "countable": 1,
+  {
+    "name": "shower",
+    "color": "#0085FF",
+    "countable": 0,
+    "openness": 1
+  },
+  {
+    "name": "radiator",
+    "color": "#FFD600",
+    "countable": 0,
+    "openness": 1
+  },
+  {
+    "name": "glass;drinking;glass",
+    "color": "#19C2C2",
+    "countable": 0,
+    "openness": 1
+  },
+  {
+    "name": "clock",
+    "color": "#66FF00",
+    "countable": 0,
+    "openness": 1
+  },
+  {
+    "name": "flag",
+    "color": "#5C00FF",
+    "countable": 0,
     "openness": 1
   }
 ]
