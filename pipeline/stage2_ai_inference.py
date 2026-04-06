@@ -94,8 +94,16 @@ def stage2_ai_inference(image: np.ndarray, config: Dict[str, Any]) -> Dict[str, 
             print(f"  [SKY] Sky gap refinement: +{gap_count} pixels "
                   f"(total {sky_mask.sum()/sky_mask.size*100:.1f}%)")
 
+    # 检测语义分割是否有效（全零表示推理失败或所有像素未分类）
+    semantic_unique = int(np.max(semantic_map))
+    semantic_ok = semantic_unique > 0
+    if not semantic_ok:
+        print(f"  ⚠️  [WARN] Semantic map is all-zeros — inference likely failed "
+              f"(image {W}x{H} = {W*H/1e6:.1f}MP)")
+
     return {
         'semantic_map': semantic_map,
+        'semantic_status': 'success' if semantic_ok else 'failed',
         'depth_map': depth_map,
         'depth_metric': depth_metric,   # float32, 单位: 米
         'sky_mask': sky_mask,           # bool (H,W) or None
@@ -105,11 +113,11 @@ def stage2_ai_inference(image: np.ndarray, config: Dict[str, Any]) -> Dict[str, 
 def _semantic_segmentation(image: np.ndarray, config: Dict[str, Any]) -> np.ndarray:
     """
     语义分割 - 使用 SAM 2.1 + LangSAM
-    
+
     参数:
         image: (H, W, 3) BGR uint8
         config: dict - 配置参数
-    
+
     返回:
         semantic_map: (H, W) uint8, 值范围 [0, N]
             - 0: 背景/未分类
@@ -118,8 +126,20 @@ def _semantic_segmentation(image: np.ndarray, config: Dict[str, Any]) -> np.ndar
     H, W = image.shape[:2]
     backend = str(config.get('semantic_backend', 'oneformer_ade20k')).strip().lower()
 
+    # 大图自动降采样: 超过 MAX_PIXELS 时缩小，推理后再上采样回原尺寸
+    MAX_PIXELS = int(config.get('semantic_max_pixels', 4_000_000))  # 默认 4MP
+    _sem_scale = 1.0
+    if H * W > MAX_PIXELS:
+        _sem_scale = (MAX_PIXELS / (H * W)) ** 0.5
+        new_h, new_w = int(H * _sem_scale), int(W * _sem_scale)
+        image = cv2.resize(image, (new_w, new_h), interpolation=cv2.INTER_AREA)
+        print(f"  [RESIZE] Semantic input: {W}x{H} ({W*H/1e6:.1f}MP) → "
+              f"{new_w}x{new_h} ({new_w*new_h/1e6:.1f}MP)")
+
+    h_in, w_in = image.shape[:2]
+
     # 初始化语义分割图
-    semantic_map = np.zeros((H, W), dtype=np.uint8)
+    semantic_map = np.zeros((h_in, w_in), dtype=np.uint8)
 
     if backend.startswith('oneformer'):
         try:
@@ -151,17 +171,30 @@ def _semantic_segmentation(image: np.ndarray, config: Dict[str, Any]) -> np.ndar
                     if use_fp16 and device.type == 'cuda':
                         inputs = {k: v.half() if torch.is_floating_point(v) else v for k, v in inputs.items()}
                     outputs = model(**inputs)
-                    pred = processor.post_process_semantic_segmentation(outputs, target_sizes=[(H, W)])[0]
+                    pred = processor.post_process_semantic_segmentation(outputs, target_sizes=[(h_in, w_in)])[0]
                 semantic_map = pred.detach().to('cpu').numpy().astype(np.uint8)
             if profile:
                 print(f"  ⏱️  OneFormer inference+post: {time.perf_counter() - t1:.3f}s")
+
+            # 如果降采样过，上采样回原尺寸
+            if _sem_scale < 1.0:
+                semantic_map = cv2.resize(semantic_map, (W, H), interpolation=cv2.INTER_NEAREST)
+                print(f"  [RESIZE] Semantic output upsampled back to {W}x{H}")
+
             return semantic_map
 
         except Exception as e:
             print(f"  ❌ OneFormer 语义分割出错: {e}")
             import traceback
             traceback.print_exc()
-            return semantic_map
+            # 清理 GPU 显存碎片
+            try:
+                if TORCH_AVAILABLE and torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+            except Exception:
+                pass
+            # 返回原始尺寸的全零图（非降采样后的尺寸）
+            return np.zeros((H, W), dtype=np.uint8)
 
     # 兼容旧实现：LangSAM 文本提示分割
     classes = list(config.get('classes', []) or [])
@@ -178,7 +211,7 @@ def _semantic_segmentation(image: np.ndarray, config: Dict[str, Any]) -> np.ndar
         model, _processor = get_semantic_model({**config, 'semantic_backend': 'langsam'})
         if model is None:
             print("  ⚠️  警告: LangSAM 未就绪，语义分割使用占位实现")
-            _generate_placeholder_semantic_map(semantic_map, classes, H, W)
+            _generate_placeholder_semantic_map(semantic_map, classes, h_in, w_in)
             return semantic_map
 
         if profile:
@@ -210,7 +243,17 @@ def _semantic_segmentation(image: np.ndarray, config: Dict[str, Any]) -> np.ndar
         print(f"  ❌ LangSAM 语义分割出错: {e}")
         import traceback
         traceback.print_exc()
-        return semantic_map
+        try:
+            if TORCH_AVAILABLE and torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        except Exception:
+            pass
+        return np.zeros((H, W), dtype=np.uint8)
+
+    # 如果降采样过，上采样回原尺寸
+    if _sem_scale < 1.0:
+        semantic_map = cv2.resize(semantic_map, (W, H), interpolation=cv2.INTER_NEAREST)
+        print(f"  [RESIZE] Semantic output (LangSAM) upsampled back to {W}x{H}")
 
     return semantic_map
 

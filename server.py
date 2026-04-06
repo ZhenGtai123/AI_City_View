@@ -256,7 +256,12 @@ def _run_pipeline(
     stage2 = stage2_ai_inference(image, config)
     depth_map = stage2["depth_map"]
     semantic_map = stage2["semantic_map"]
+    semantic_status = stage2.get("semantic_status", "unknown")
     depth_metric = stage2.get("depth_metric")
+
+    if semantic_status == "failed":
+        logger.warning("[%s] Semantic segmentation failed (image %dx%d = %.1fMP) — "
+                       "output will be degraded", job_id, w, h, w * h / 1e6)
     sky_mask = stage2.get("sky_mask")
 
     # Stage 3: Post-processing
@@ -303,6 +308,12 @@ def _run_pipeline(
         output_images["sky_mask"] = sky_mask.astype(np.uint8) * 255
     output_images["semantic_raw"] = semantic_map
 
+    # 验证 semantic_map 质量
+    unique_colors = len(np.unique(semantic_processed))
+    if unique_colors <= 1:
+        logger.warning("[%s] Semantic map has only %d unique class(es) — "
+                       "likely inference failure or blank input", job_id, unique_colors)
+
     # Build metadata
     metadata = {
         "basename": job_id,
@@ -340,6 +351,7 @@ def _run_pipeline(
 
     return {
         "status": "success",
+        "semantic_status": semantic_status,
         "job_id": job_id,
         "images": hex_images,
         "detected_classes": len(class_stats),
