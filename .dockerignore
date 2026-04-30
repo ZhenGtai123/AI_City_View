@@ -1,0 +1,51 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.venv/
+venv/
+.env
+.env.local
+
+# Virtual envs / installs (must be re-installed in image)
+.conda/
+*.egg-info/
+
+# Outputs / caches (mounted as volumes at runtime)
+outputs/
+output/
+temp/
+masks/
+.cache/
+runs/
+
+# Notebooks
+*.ipynb
+.ipynb_checkpoints/
+
+# Local scripts and large local data
+benchmark_gpu.py
+local_bench.py
+batch_run.py
+cloud_batch_run.py
+find_sky_images.py
+check_depth_*.py
+_emoji_hits.txt
+monitor.sh
+gcp_setup.sh
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Git
+.git/
+.gitignore
+
+# Docs (not needed at runtime)
+*.md
+plan.md
+research_analysis.md
