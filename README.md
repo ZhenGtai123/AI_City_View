@@ -2,55 +2,9 @@
 
 城市街景全景图视觉分析 API。输入一张全景图，自动裁剪为 3 个视角（左 / 中 / 右），对每个视角执行语义分割、深度估计、前中背景分层等分析，生成 25 张分析图片。
 
-通过 FastAPI 提供 HTTP API，供 [GreenSVC](../greensvc) 平台集成调用。
+通过 FastAPI 提供 HTTP API，供 [SceneRx](../greensvc) 平台集成调用。
 
----
-
-## 系统要求
-
-| 项目 | 最低要求 |
-|------|---------|
-| GPU | NVIDIA，显存 >= 8 GB（RTX 3060 / 4060 及以上） |
-| 内存 | 16 GB |
-| Python | 3.10 |
-
----
-
-## 安装
-
-```bash
-git clone https://github.com/ZhenGtai123/AI_City_View.git
-cd AI_City_View
-
-conda create -n cityview python=3.10 -y
-conda activate cityview
-
-# 1. 装项目依赖
-pip install -r requirements.txt
-
-# 2. 装 Depth Anything V3（从 GitHub）
-pip install git+https://github.com/ByteDance-Seed/depth-anything-3.git
-
-# 3. 装 PyTorch CUDA 版（必须在 xformers 之前！上面的步骤会装 CPU 版 PyTorch）
-#    --force-reinstall 强制覆盖 CPU 版，--no-deps 避免连带重装 numpy 等依赖
-pip install --force-reinstall --no-deps torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124
-
-# 4. 验证 GPU（必须显示 True 再继续，否则重新执行第 3 步）
-python -c "import torch; print(torch.cuda.is_available())"
-
-# 5. 可选加速（必须在第 3 步之后装，确保匹配 CUDA 版 PyTorch）
-pip install xformers --index-url https://download.pytorch.org/whl/cu124
-```
-
-> **重要**：步骤 1-2 会自动拉取 CPU 版 PyTorch，第 3 步用 CUDA 版强制覆盖。xformers 必须在第 3 步之后装，否则版本不匹配。如果 `torch.cuda.is_available()` 返回 `False`，重新执行第 3 步。
-
-> 第一次启动会自动下载 AI 模型（OneFormer ~1.2GB + DA3 ~1.4GB），之后会缓存到本地。
-
----
-
-## 运行
-
-### Docker（最快，推荐）
+## Quickstart (Docker)
 
 需要 NVIDIA GPU + [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html)。
 
@@ -60,12 +14,31 @@ cd AI_City_View
 docker compose up -d
 ```
 
-- 首次构建 ~10 分钟（装 PyTorch CUDA + Depth Anything + xformers）。
-- 首次启动 ~2 分钟（下载 OneFormer ~1.2GB + DA3 ~1.4GB,缓存到 `hf_cache` volume）。
-- 改深度模型: `VISION_DEPTH_MODEL=DA3NESTED-GIANT-LARGE-1.1 docker compose up -d`。
-- 验证: `curl http://localhost:8000/health`。
+API 起在 **http://localhost:8000**(`/docs` 看交互文档)。验证: `curl http://localhost:8000/health`。
 
-### FastAPI Server（本地 Python）
+- 首次构建 ~10 分钟（装 PyTorch CUDA + Depth Anything + xformers）
+- 首次启动 ~2 分钟（下载 OneFormer ~1.2GB + DA3 ~1.4GB,缓存到 `hf_cache` volume）
+- 改深度模型: `VISION_DEPTH_MODEL=DA3NESTED-GIANT-LARGE-1.1 docker compose up -d`
+
+让 SceneRx 后端连过来: 在 SceneRx Settings 页设 `VISION_API_URL=http://127.0.0.1:8000`(或同台机 docker 之间用 `http://host.docker.internal:8000`)。
+
+---
+
+## 系统要求
+
+| 项目 | 最低要求 |
+|------|---------|
+| GPU | NVIDIA，显存 >= 8 GB（RTX 3060 / 4060 及以上） |
+| 内存 | 16 GB |
+| Python | 3.10 (仅本地 Python 模式需要) |
+
+---
+
+## 运行
+
+### FastAPI Server（本地 Python，开发用）
+
+只在你需要改模型代码、不想 rebuild 镜像时用。先按下面的 `安装` 段装好 conda 环境。
 
 ```bash
 conda activate cityview
@@ -82,7 +55,7 @@ python server.py
 PORT=8001 python server.py
 ```
 
-> 确保 GreenSVC 后端 `.env` 中设置 `VISION_API_URL=http://127.0.0.1:8000`。
+> 让 SceneRx 后端连过来: Settings 页设 `VISION_API_URL=http://127.0.0.1:8000`。
 
 ### 命令行（单张处理）
 
@@ -112,6 +85,37 @@ python cloud_batch_run.py \
   --workers=4 \
   --gpu-concurrency=2
 ```
+
+---
+
+## 安装 (本地 Python,开发用)
+
+只在你要改模型代码、不用 Docker 时跑这一段。Docker 镜像已经把这些步骤封好了。
+
+```bash
+git clone https://github.com/ZhenGtai123/AI_City_View.git
+cd AI_City_View
+
+conda create -n cityview python=3.10 -y
+conda activate cityview
+
+# 1. 项目依赖
+pip install -r requirements.txt
+
+# 2. Depth Anything V3（GitHub 源）
+pip install git+https://github.com/ByteDance-Seed/depth-anything-3.git
+
+# 3. PyTorch CUDA 版（必须在 xformers 之前；上面的步骤会装 CPU 版,这里强制覆盖）
+pip install --force-reinstall --no-deps torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124
+
+# 4. 验证 GPU（必须 True 才能继续）
+python -c "import torch; print(torch.cuda.is_available())"
+
+# 5. 可选加速（在第 3 步之后装）
+pip install xformers --index-url https://download.pytorch.org/whl/cu124
+```
+
+> 步骤 1-2 会拉 CPU 版 PyTorch,第 3 步用 CUDA 版覆盖。xformers 必须在第 3 步之后装。`torch.cuda.is_available()` 返 `False` 就重跑第 3 步。
 
 ---
 
