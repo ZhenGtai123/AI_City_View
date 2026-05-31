@@ -59,8 +59,13 @@ RUN pip install \
         python-multipart>=0.0.6 \
         tqdm>=4.65.0
 
-# Depth Anything V3 (ByteDance fork) — installed from GitHub
-RUN pip install git+https://github.com/ByteDance-Seed/depth-anything-3.git
+# Depth Anything V3 (ByteDance fork) — installed from GitHub.
+# `--ignore-installed` skirts the Ubuntu 22.04 distutils-installed
+# `python3-blinker 1.4` which pip can't uninstall cleanly when DA3's
+# transitive deps want a newer blinker. Without this flag the build
+# fails with `uninstall-distutils-installed-package`.
+RUN pip install --ignore-installed blinker \
+    && pip install git+https://github.com/ByteDance-Seed/depth-anything-3.git
 
 # Application code
 COPY . .
