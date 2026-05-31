@@ -2,47 +2,21 @@
 
 城市街景全景图视觉分析 API。输入一张全景图，自动裁剪为 3 个视角（左 / 中 / 右），对每个视角执行语义分割、深度估计、前中背景分层等分析，生成 25 张分析图片。
 
-通过 FastAPI 提供 HTTP API，供 [SceneRx](../scenerx) 平台集成调用。
+通过 FastAPI 提供 HTTP API，供 [GreenSVC](../greensvc) 平台集成调用。
 
 ---
 
 ## 系统要求
 
-| 模型 | 显存 | 备注 |
-|------|------|------|
-| `DA3METRIC-LARGE` (默认) | **>= 8 GB** | 0.35B 参数，规范化深度 + 焦距换算成米 |
-| `DA3NESTED-GIANT-LARGE-1.1` | **>= 16 GB** | 1.4B 参数，原生度量深度 + 内置天空检测 |
-
-通用：NVIDIA GPU + CUDA 12.x 驱动，内存 ≥ 16 GB。
-
----
-
-## 快速启动（Docker，推荐）
-
-无需手动管 conda / CUDA 版本兼容性。从 SceneRx 仓库通过 docker-compose 一键启动整个平台（含本服务）：
-
-```bash
-cd ../scenerx
-cp .env.example .env                 # 编辑：填 API Key，可选改 VISION_DEPTH_MODEL
-docker-compose up -d
-```
-
-详见 [SceneRx README](../scenerx/README.md#quick-start-docker)。
-
-也可以单独跑 Vision API 容器：
-
-```bash
-cd AI_City_View
-docker build -t scenerx/vision-api .
-docker run --gpus all -p 8000:8000 \
-  -e VISION_DEPTH_MODEL=DA3METRIC-LARGE \
-  -v hf-cache:/root/.cache/huggingface \
-  scenerx/vision-api
-```
+| 项目 | 最低要求 |
+|------|---------|
+| GPU | NVIDIA，显存 >= 8 GB（RTX 3060 / 4060 及以上） |
+| 内存 | 16 GB |
+| Python | 3.10 |
 
 ---
 
-## 手动安装（无 Docker）
+## 安装
 
 ```bash
 git clone https://github.com/ZhenGtai123/AI_City_View.git
@@ -93,7 +67,7 @@ python server.py
 PORT=8001 python server.py
 ```
 
-> 确保 SceneRx 后端 `.env` 中设置 `VISION_API_URL=http://127.0.0.1:8000`。
+> 确保 GreenSVC 后端 `.env` 中设置 `VISION_API_URL=http://127.0.0.1:8000`。
 
 ### 命令行（单张处理）
 
