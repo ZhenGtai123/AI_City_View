@@ -50,7 +50,22 @@ pip install xformers --index-url https://download.pytorch.org/whl/cu124
 
 ## 运行
 
-### FastAPI Server（主要方式）
+### Docker（最快，推荐）
+
+需要 NVIDIA GPU + [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html)。
+
+```bash
+git clone https://github.com/ZhenGtai123/AI_City_View.git
+cd AI_City_View
+docker compose up -d
+```
+
+- 首次构建 ~10 分钟（装 PyTorch CUDA + Depth Anything + xformers）。
+- 首次启动 ~2 分钟（下载 OneFormer ~1.2GB + DA3 ~1.4GB,缓存到 `hf_cache` volume）。
+- 改深度模型: `VISION_DEPTH_MODEL=DA3NESTED-GIANT-LARGE-1.1 docker compose up -d`。
+- 验证: `curl http://localhost:8000/health`。
+
+### FastAPI Server（本地 Python）
 
 ```bash
 conda activate cityview

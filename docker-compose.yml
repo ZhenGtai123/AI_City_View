@@ -1,0 +1,55 @@
+# =============================================================================
+# AI City View — standalone Vision API deployment
+# -----------------------------------------------------------------------------
+# Usage:
+#   docker compose up -d            # build locally + run
+#   docker compose up -d --pull always   # use pre-published GHCR image instead
+#
+# Requirements:
+#   - NVIDIA GPU with >=8 GB VRAM (driver visible to host)
+#   - NVIDIA Container Toolkit installed and configured for Docker
+#     (https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html)
+#
+# After `up`, the API listens on http://localhost:8000.
+# Verify:  curl http://localhost:8000/health
+# =============================================================================
+
+services:
+  vision-api:
+    # Build from this directory by default. To pull the published image
+    # instead, comment `build:` and uncomment the `image:` override below.
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: ${VISION_IMAGE:-scenerx/vision-api:local}
+    container_name: ai-city-view
+    environment:
+      # Which depth model the API loads on startup.
+      #   DA3METRIC-LARGE              (default, 0.35B params, ~8 GB VRAM)
+      #   DA3NESTED-GIANT-LARGE-1.1    (1.4B params, ~16 GB VRAM)
+      VISION_DEPTH_MODEL: ${VISION_DEPTH_MODEL:-DA3METRIC-LARGE}
+      HF_HOME: /root/.cache/huggingface
+    volumes:
+      # Cache HuggingFace weights between restarts (~3 GB the first time).
+      - hf_cache:/root/.cache/huggingface
+      # Persist generated analysis outputs.
+      - ./outputs:/app/outputs
+    ports:
+      - "8000:8000"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD", "curl", "-fs", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      start_period: 120s
+      retries: 3
+    restart: unless-stopped
+
+volumes:
+  hf_cache:
