@@ -19,6 +19,7 @@ Usage:
 from __future__ import annotations
 
 import asyncio
+import base64
 import copy
 import io
 import json
@@ -66,6 +67,57 @@ OUTPUTS_DIR = _PROJECT_ROOT / "outputs"
 OUTPUTS_DIR.mkdir(exist_ok=True)
 OUTPUT_RETENTION_SECONDS = 3600  # 1 hour
 CLEANUP_INTERVAL_SECONDS = 600  # 10 minutes
+
+# Available depth models. The Vision API loads exactly one at startup,
+# selected via the VISION_DEPTH_MODEL env var (default: DA3METRIC-LARGE).
+AVAILABLE_DEPTH_MODELS: Dict[str, Dict[str, Any]] = {
+    "depth-anything/DA3METRIC-LARGE": {
+        "id": "depth-anything/DA3METRIC-LARGE",
+        "label": "DA3 Metric Large",
+        "params_billions": 0.35,
+        "vram_gb": 8,
+        "depth_type": "canonical (focal-converted to meters)",
+        "sky_detection": "from semantic map",
+        "notes": "Default. Lighter, fits 8GB VRAM.",
+    },
+    "depth-anything/DA3NESTED-GIANT-LARGE-1.1": {
+        "id": "depth-anything/DA3NESTED-GIANT-LARGE-1.1",
+        "label": "DA3 Nested Giant-Large 1.1",
+        "params_billions": 1.4,
+        "vram_gb": 16,
+        "depth_type": "metric (meters, native)",
+        "sky_detection": "built-in",
+        "notes": "Higher accuracy, requires 16GB+ VRAM.",
+    },
+}
+DEFAULT_DEPTH_MODEL = "depth-anything/DA3METRIC-LARGE"
+
+
+def _resolve_depth_model() -> str:
+    """Resolve the depth model ID from VISION_DEPTH_MODEL env var.
+
+    Accepts either the full HuggingFace repo ID or a shorthand suffix
+    (e.g. ``DA3METRIC-LARGE``). Falls back to the default with a warning
+    if the value is not recognized.
+    """
+    requested = os.environ.get("VISION_DEPTH_MODEL", "").strip()
+    if not requested:
+        return DEFAULT_DEPTH_MODEL
+
+    if requested in AVAILABLE_DEPTH_MODELS:
+        return requested
+
+    # Shorthand: match by repo name suffix
+    for full_id in AVAILABLE_DEPTH_MODELS:
+        if full_id.split("/")[-1] == requested:
+            return full_id
+
+    logger.warning(
+        "VISION_DEPTH_MODEL=%r not recognized. Falling back to %s. "
+        "Allowed values: %s",
+        requested, DEFAULT_DEPTH_MODEL, list(AVAILABLE_DEPTH_MODELS.keys()),
+    )
+    return DEFAULT_DEPTH_MODEL
 
 # All images to hex-encode in JSON responses (23 from stage6 + sky_mask + semantic_raw)
 HEX_IMAGE_KEYS = [
@@ -135,6 +187,40 @@ def _encode_image_hex(img: np.ndarray) -> str:
     return buf.tobytes().hex()
 
 
+def _encode_depth_metric_b64(depth_metric: Any) -> str:
+    """Encode a float32 metric-depth (meters) array as base64-encoded .npy bytes.
+
+    The client decodes with ``np.load(io.BytesIO(base64.b64decode(s)))`` to
+    recover the exact float32 array. Returns "" when no metric depth exists
+    (e.g. a non-metric depth backend), so the field is always present but the
+    client can treat empty as "no metric depth".
+    """
+    if depth_metric is None or not isinstance(depth_metric, np.ndarray):
+        return ""
+    buf = io.BytesIO()
+    np.save(buf, np.ascontiguousarray(depth_metric, dtype=np.float32), allow_pickle=False)
+    return base64.b64encode(buf.getvalue()).decode("ascii")
+
+
+def _to_jsonable(obj: Any) -> Any:
+    """Convert numpy / Path types so the metadata dict is JSON-serializable."""
+    if isinstance(obj, (str, int, float, bool)) or obj is None:
+        return obj
+    if isinstance(obj, Path):
+        return str(obj)
+    if isinstance(obj, np.integer):
+        return int(obj)
+    if isinstance(obj, np.floating):
+        return float(obj)
+    if isinstance(obj, np.ndarray):
+        return obj.tolist()
+    if isinstance(obj, dict):
+        return {str(k): _to_jsonable(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_to_jsonable(v) for v in obj]
+    return str(obj)
+
+
 def _load_semantic_config() -> list[dict]:
     """Load Semantic_configuration.json from project root."""
     config_path = _PROJECT_ROOT / "Semantic_configuration.json"
@@ -149,13 +235,16 @@ def get_default_config() -> Dict[str, Any]:
         if "color" in item and "bgr" not in item:
             item["bgr"] = _hex_to_bgr(item["color"])
 
+    depth_model = _resolve_depth_model()
+    logger.info("Depth model selected: %s", depth_model)
+
     return {
         "split_method": "percentile",
         "semantic_items": semantic_config,
         "enable_semantic": True,
         "semantic_backend": "oneformer_ade20k",
         "depth_backend": "v3",
-        "depth_model_id_v3": "depth-anything/DA3METRIC-LARGE",
+        "depth_model_id_v3": depth_model,
         "depth_focal_length": 300,
         "depth_process_res": 672,
         "depth_invert_v3": False,
@@ -166,9 +255,9 @@ def build_config_from_request(
     request_data: Dict[str, Any],
     base_config: Dict[str, Any],
 ) -> Dict[str, Any]:
-    """Overlay GreenSVC request fields onto the default pipeline config.
+    """Overlay SceneRx request fields onto the default pipeline config.
 
-    GreenSVC sends:
+    SceneRx sends:
         semantic_classes:      ["Sky", "Trees", ...]
         semantic_countability: [0, 1, ...]
         openness_list:         [0, 1, ...]
@@ -319,6 +408,7 @@ def _run_pipeline(
         "basename": job_id,
         "width": w,
         "height": h,
+        "config": {k: v for k, v in config.items() if isinstance(v, (str, int, float, bool))},
     }
     if "depth_stats" in stage4:
         metadata["depth_stats"] = stage4["depth_stats"]
@@ -354,6 +444,11 @@ def _run_pipeline(
         "semantic_status": semantic_status,
         "job_id": job_id,
         "images": hex_images,
+        # Metric depth (true meters) as base64-encoded .npy + the metadata dict
+        # (depth_stats / fmb_thresholds / depth_color_legend / config). "" when
+        # the depth backend produced no metric depth.
+        "depth_metric_npy": _encode_depth_metric_b64(depth_metric),
+        "metadata": _to_jsonable(metadata),
         "detected_classes": len(class_stats),
         "total_classes": len(config.get("semantic_items", [])),
         "class_statistics": class_stats,
@@ -454,6 +549,7 @@ async def health():
     gpu_available = False
     gpu_name = None
     gpu_memory = None
+    gpu_memory_gb = None
 
     try:
         import torch
@@ -461,7 +557,8 @@ async def health():
         if gpu_available:
             gpu_name = torch.cuda.get_device_name(0)
             total = torch.cuda.get_device_properties(0).total_memory
-            gpu_memory = f"{total / (1024**3):.1f} GB"
+            gpu_memory_gb = round(total / (1024**3), 1)
+            gpu_memory = f"{gpu_memory_gb} GB"
     except ImportError:
         pass
 
@@ -470,10 +567,12 @@ async def health():
         "gpu_available": gpu_available,
         "gpu_name": gpu_name,
         "gpu_memory": gpu_memory,
+        "gpu_memory_gb": gpu_memory_gb,
         "models_loaded": True,
         "semantic_classes": len(_default_config.get("semantic_items", [])),
         "depth_backend": _default_config.get("depth_backend", "unknown"),
         "depth_model": _default_config.get("depth_model_id_v3", "unknown"),
+        "available_depth_models": list(AVAILABLE_DEPTH_MODELS.values()),
     }
 
 
