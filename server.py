@@ -64,7 +64,29 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name
 # ---------------------------------------------------------------------------
 OUTPUTS_DIR = _PROJECT_ROOT / "outputs"
 OUTPUTS_DIR.mkdir(exist_ok=True)
-OUTPUT_RETENTION_SECONDS = 3600  # 1 hour
+
+
+def _resolve_output_retention() -> int:
+    """Seconds to keep output dirs before cleanup. <= 0 disables cleanup
+    (outputs kept forever). Set via VISION_OUTPUT_RETENTION_SECONDS.
+
+    Default 0 (keep) so the 25 files per job — 23 PNGs + depth_metric.npy +
+    metadata.json — persist in outputs/ for local inspection. Set a positive
+    value (e.g. 3600) in production to cap disk usage.
+    """
+    raw = os.environ.get("VISION_OUTPUT_RETENTION_SECONDS", "").strip()
+    if not raw:
+        return 0
+    try:
+        return int(raw)
+    except ValueError:
+        logger.warning(
+            "VISION_OUTPUT_RETENTION_SECONDS=%r invalid — keeping outputs forever", raw
+        )
+        return 0
+
+
+OUTPUT_RETENTION_SECONDS = _resolve_output_retention()
 CLEANUP_INTERVAL_SECONDS = 600  # 10 minutes
 
 # All images to hex-encode in JSON responses (23 from stage6 + sky_mask + semantic_raw)
@@ -410,17 +432,25 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning("Model preload failed (will retry on first request): %s", e)
 
-    # Start cleanup task
-    cleanup_task = asyncio.create_task(_cleanup_old_outputs())
+    # Start cleanup task only when retention is enabled (> 0). When disabled
+    # (default), outputs persist forever for local inspection.
+    cleanup_task: Optional[asyncio.Task] = None
+    if OUTPUT_RETENTION_SECONDS > 0:
+        logger.info("Output cleanup enabled: retention=%ds", OUTPUT_RETENTION_SECONDS)
+        cleanup_task = asyncio.create_task(_cleanup_old_outputs())
+    else:
+        logger.info("Output cleanup disabled — outputs/ kept forever "
+                    "(set VISION_OUTPUT_RETENTION_SECONDS>0 to enable)")
 
     yield
 
     # Shutdown
-    cleanup_task.cancel()
-    try:
-        await cleanup_task
-    except asyncio.CancelledError:
-        pass
+    if cleanup_task is not None:
+        cleanup_task.cancel()
+        try:
+            await cleanup_task
+        except asyncio.CancelledError:
+            pass
     clear_model_cache()
     logger.info("Server shutdown, GPU memory released")
 
