@@ -1,12 +1,12 @@
 # AI City View
 
-城市街景全景图视觉分析 API。输入一张全景图，自动裁剪为 3 个视角（左 / 中 / 右），对每个视角执行语义分割、深度估计、前中背景分层等分析，生成 25 张分析图片。
+Urban street-view panorama analysis API. Feed it a single panorama, it auto-crops to three 90° views (left / front / right) and runs semantic segmentation, depth estimation, and foreground/middleground/background layering on each — producing 25 analysis images per view.
 
-通过 FastAPI 提供 HTTP API，供 [SceneRx](../greensvc) 平台集成调用。
+Exposed via FastAPI as an HTTP service so [SceneRx](../greensvc) and other platforms can call it.
 
 ## Quickstart (Docker)
 
-需要 NVIDIA GPU + [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html)。
+Requires an NVIDIA GPU and the [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html).
 
 ```bash
 git clone https://github.com/ZhenGtai123/AI_City_View.git
@@ -14,71 +14,71 @@ cd AI_City_View
 docker compose up -d
 ```
 
-API 起在 **http://localhost:8000**(`/docs` 看交互文档)。验证: `curl http://localhost:8000/health`。
+Open **http://localhost:8000/docs** for the interactive API console, or `curl http://localhost:8000/health` to verify.
 
-- 首次构建 ~10 分钟（装 PyTorch CUDA + Depth Anything + xformers）
-- 首次启动 ~2 分钟（下载 OneFormer ~1.2GB + DA3 ~1.4GB,缓存到 `hf_cache` volume）
-- 改深度模型: `VISION_DEPTH_MODEL=DA3NESTED-GIANT-LARGE-1.1 docker compose up -d`
+- First build: ~10 min (installs PyTorch CUDA + Depth Anything + xformers).
+- First request: ~2 min extra (downloads OneFormer ~1.2 GB + DA3 ~1.4 GB into the `hf_cache` volume; cached after that).
+- Switch depth model: `VISION_DEPTH_MODEL=DA3NESTED-GIANT-LARGE-1.1 docker compose up -d`.
 
-让 SceneRx 后端连过来: 在 SceneRx Settings 页设 `VISION_API_URL=http://127.0.0.1:8000`(或同台机 docker 之间用 `http://host.docker.internal:8000`)。
-
----
-
-## 系统要求
-
-| 项目 | 最低要求 |
-|------|---------|
-| GPU | NVIDIA，显存 >= 8 GB（RTX 3060 / 4060 及以上） |
-| 内存 | 16 GB |
-| Python | 3.10 (仅本地 Python 模式需要) |
+To wire this into SceneRx, open the SceneRx Settings page and set `VISION_API_URL=http://127.0.0.1:8000` (or `http://host.docker.internal:8000` when both stacks run on the same Docker host).
 
 ---
 
-## 运行
+## System requirements
 
-### FastAPI Server（本地 Python，开发用）
+| Item   | Minimum |
+|--------|---------|
+| GPU    | NVIDIA, ≥ 8 GB VRAM (RTX 3060 / 4060 or newer) |
+| Memory | 16 GB |
+| Python | 3.10 (only for the local-Python development mode) |
 
-只在你需要改模型代码、不想 rebuild 镜像时用。先按下面的 `安装` 段装好 conda 环境。
+---
+
+## Running
+
+### FastAPI Server (local Python, development only)
+
+Use this only when you're editing model code and don't want to rebuild the image. Follow the **Installation** section below to set up the conda env first.
 
 ```bash
 conda activate cityview
 python server.py
 ```
 
-- API 地址：**http://localhost:8000**
-- 交互文档：**http://localhost:8000/docs**
-- 首次启动会预加载模型（约 30–60 秒）
+- API: **http://localhost:8000**
+- Docs: **http://localhost:8000/docs**
+- First start preloads models (~30–60 s).
 
-自定义端口：
+Custom port:
 
 ```bash
 PORT=8001 python server.py
 ```
 
-> 让 SceneRx 后端连过来: Settings 页设 `VISION_API_URL=http://127.0.0.1:8000`。
+> Wire into SceneRx by setting `VISION_API_URL=http://127.0.0.1:8000` in its Settings page.
 
-### 命令行（单张处理）
+### Single-image CLI
 
 ```bash
-python main.py <图片路径> <输出目录>
+python main.py <image_path> <output_dir>
 python main.py full1.jpg output
 ```
 
-### 批量处理（本地）
+### Local batch processing
 
 ```bash
 python batch_run.py /data/input /data/output --workers=2
 ```
 
-### 云批量处理（Azure Blob → GPU VM → GCS）
+### Cloud batch processing (Azure Blob → GPU VM → GCS)
 
-适合50万张级别的大规模处理。支持断点续跑、Spot 抢占优雅退出、下载/处理/上传三阶段流水线并行。
+Designed for 500 K+ image runs. Supports resume-after-interrupt, graceful Spot preemption, and parallel download/process/upload stages.
 
 ```bash
-# 额外依赖
+# Extra deps
 pip install azure-storage-blob google-cloud-storage
 
-# 运行
+# Run
 python cloud_batch_run.py \
   --azure-sas-url "https://account.blob.core.windows.net/container?sv=..." \
   --gcs-bucket my-output-bucket \
@@ -88,9 +88,9 @@ python cloud_batch_run.py \
 
 ---
 
-## 安装 (本地 Python,开发用)
+## Installation (local Python, development only)
 
-只在你要改模型代码、不用 Docker 时跑这一段。Docker 镜像已经把这些步骤封好了。
+Skip this entirely if you're using Docker — the image bakes all of these steps.
 
 ```bash
 git clone https://github.com/ZhenGtai123/AI_City_View.git
@@ -99,42 +99,45 @@ cd AI_City_View
 conda create -n cityview python=3.10 -y
 conda activate cityview
 
-# 1. 项目依赖
+# 1. Project deps
 pip install -r requirements.txt
 
-# 2. Depth Anything V3（GitHub 源）
+# 2. Depth Anything V3 (from GitHub)
 pip install git+https://github.com/ByteDance-Seed/depth-anything-3.git
 
-# 3. PyTorch CUDA 版（必须在 xformers 之前；上面的步骤会装 CPU 版,这里强制覆盖）
-pip install --force-reinstall --no-deps torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124
+# 3. PyTorch CUDA build (must come BEFORE xformers; steps 1-2 install the CPU
+#    wheel so we force-overwrite here)
+pip install --force-reinstall --no-deps torch torchvision torchaudio \
+  --index-url https://download.pytorch.org/whl/cu124
 
-# 4. 验证 GPU（必须 True 才能继续）
+# 4. Verify GPU (must print True before continuing)
 python -c "import torch; print(torch.cuda.is_available())"
 
-# 5. 可选加速（在第 3 步之后装）
+# 5. Optional accelerator (install AFTER step 3 so versions match)
 pip install xformers --index-url https://download.pytorch.org/whl/cu124
 ```
 
-> 步骤 1-2 会拉 CPU 版 PyTorch,第 3 步用 CUDA 版覆盖。xformers 必须在第 3 步之后装。`torch.cuda.is_available()` 返 `False` 就重跑第 3 步。
+> Steps 1–2 pull a CPU build of PyTorch; step 3 overwrites it with the CUDA build. xformers must come last. If `torch.cuda.is_available()` returns `False`, re-run step 3.
 
 ---
 
-## API 文档
+## API reference
 
-| 方法 | 路径 | 说明 |
-|------|------|------|
-| `POST` | `/analyze` | 分析单张图片，返回 hex 编码图像 + 统计数据 |
-| `POST` | `/analyze/panorama` | 全景图模式：自动裁剪 3 个视角并分析 |
-| `GET` | `/health` | 健康检查（GPU 状态、已加载模型） |
-| `GET` | `/config` | 返回语义类配置 (`Semantic_configuration.json`) |
-| `GET` | `/outputs/{job_id}/download` | 下载某次分析的全部输出（ZIP） |
-| `GET` | `/outputs/{job_id}/{filename}` | 下载单个输出文件 |
+| Method | Path | Purpose |
+|--------|------|---------|
+| `POST` | `/analyze`                       | Analyze one image, return hex-encoded outputs + stats |
+| `POST` | `/analyze/panorama`              | Panorama mode: auto-crop 3 views and analyze each |
+| `GET`  | `/health`                        | Health check (GPU status, models loaded) |
+| `GET`  | `/config`                        | Returns the current `Semantic_configuration.json` |
+| `GET`  | `/outputs/{job_id}/download`     | Download a single job's outputs as a ZIP |
+| `GET`  | `/outputs/{job_id}/{filename}`   | Download one file from a job |
 
-### POST /analyze 请求格式
+### `POST /analyze` request
 
-`multipart/form-data`：
-- `file` — 图片文件
-- `request_data` — JSON 字符串：
+`multipart/form-data`:
+
+- `file` — image file
+- `request_data` — JSON string:
 
 ```json
 {
@@ -146,25 +149,25 @@ pip install xformers --index-url https://download.pytorch.org/whl/cu124
 }
 ```
 
-### 响应格式
+### Response
 
 ```json
 {
   "status": "success",
   "job_id": "img_a1b2c3d4_1708900000",
   "images": {
-    "semantic_map": "<hex-encoded PNG>",
-    "depth_map": "<hex-encoded PNG>",
-    "openness_map": "...",
-    "fmb_map": "...",
-    "foreground_map": "...",
+    "semantic_map":     "<hex-encoded PNG>",
+    "depth_map":        "<hex-encoded PNG>",
+    "openness_map":     "...",
+    "fmb_map":          "...",
+    "foreground_map":   "...",
     "middleground_map": "...",
-    "background_map": "...",
-    "sky_mask": "...",
-    "semantic_raw": "..."
+    "background_map":   "...",
+    "sky_mask":         "...",
+    "semantic_raw":     "..."
   },
   "class_statistics": {
-    "sky": { "pixel_count": 50000, "percentage": 25.5 },
+    "sky":  { "pixel_count": 50000, "percentage": 25.5 },
     "tree": { "pixel_count": 30000, "percentage": 15.3 }
   },
   "fmb_statistics": { ... },
@@ -175,42 +178,42 @@ pip install xformers --index-url https://download.pytorch.org/whl/cu124
 
 ---
 
-## 处理流程
+## Pipeline
 
 ```
-全景图输入
+panorama in
     │
     ▼
-Stage 1: 预处理 ─── 等距柱状投影裁剪 → left / front / right (90° FOV)
+Stage 1: preprocess  ── equirectangular crop → left / front / right (90° FOV)
     │
     ▼
-Stage 2: AI 推理 ─── OneFormer (语义分割, ADE20K-150) + Depth Anything V3 (度量深度)
+Stage 2: AI inference ── OneFormer (ADE20K-150 segmentation) + Depth Anything V3 (metric depth)
     │
     ▼
-Stage 3: 后处理 ─── 语义图清洗、噪点去除
+Stage 3: postprocess ── semantic map cleanup, denoising
     │
     ▼
-Stage 4: FMB 分层 ── 前景 (0-10m) / 中景 (10-50m) / 背景 (>50m) / 天空
+Stage 4: FMB layering ─ foreground (0-10 m) / middleground (10-50 m) / background (>50 m) / sky
     │
     ▼
-Stage 5: 开放度 ─── 基于语义类的空间开放度计算
+Stage 5: openness    ── semantic-class-aware spatial openness map
     │
     ▼
-Stage 6: 生成图片 ── 23 张分析图
+Stage 6: render      ── 23 analysis images
     │
     ▼
-Stage 7: 保存输出 ── 23 PNG + sky_mask + semantic_raw + metadata.json + depth_metric.npy
+Stage 7: save        ── 23 PNG + sky_mask + semantic_raw + metadata.json + depth_metric.npy
 ```
 
 ---
 
-## 输出结构
+## Output layout
 
-每张全景图生成 3 个视角文件夹，每个文件夹 25 个文件：
+Each panorama produces three view folders; each view folder contains 25 files:
 
 ```
 output/
-├── {图片名}_left/
+├── {image_name}_left/
 │   ├── semantic_map.png
 │   ├── depth_map.png
 │   ├── openness_map.png
@@ -226,27 +229,27 @@ output/
 │   ├── semantic_raw.png
 │   ├── depth_metric.npy
 │   └── metadata.json
-├── {图片名}_front/
-└── {图片名}_right/
+├── {image_name}_front/
+└── {image_name}_right/
 ```
 
 ---
 
-## 配置
+## Configuration
 
-### 深度估计模型
+### Depth estimation model
 
-在 `server.py` 的 `get_default_config()` 中配置：
+Picked at startup via `VISION_DEPTH_MODEL`, or change the default in `server.py` → `get_default_config()`.
 
-| 模型 | 参数量 | 输出 | 显存需求 |
-|------|--------|------|---------|
-| `DA3METRIC-LARGE`（默认） | 0.35B | 规范化深度 → 米数 | 8 GB |
-| `DA3NESTED-GIANT-LARGE-1.1` | 1.4B | 真实米数 + 天空检测 | 16 GB+ |
-| `DA3MONO-LARGE` | 0.35B | 相对深度（无米数） | 8 GB |
+| Model | Params | Output | VRAM |
+|-------|--------|--------|------|
+| `DA3METRIC-LARGE` (default) | 0.35B | canonical → metric | 8 GB |
+| `DA3NESTED-GIANT-LARGE-1.1` | 1.4B  | native metric + sky detection | 16 GB+ |
+| `DA3MONO-LARGE`             | 0.35B | relative depth (no metric) | 8 GB |
 
-### Semantic_configuration.json
+### `Semantic_configuration.json`
 
-语义类定义文件：
+Per-class definition:
 
 ```json
 {
@@ -259,25 +262,25 @@ output/
 
 ---
 
-## 项目结构
+## Project layout
 
 ```
 AI_City_View/
-├── server.py              # FastAPI API 入口
-├── main.py                # 全景图处理核心逻辑
-├── batch_run.py           # 本地批量处理脚本
-├── cloud_batch_run.py     # 云批量处理 (Azure Blob → GCS)
+├── server.py              # FastAPI entry point
+├── main.py                # panorama pipeline core
+├── batch_run.py           # local batch script
+├── cloud_batch_run.py     # cloud batch (Azure Blob → GCS)
 ├── pipeline/
-│   ├── stage1_preprocess.py        # 等距柱状投影裁剪
+│   ├── stage1_preprocess.py        # equirectangular crop
 │   ├── stage2_ai_inference.py      # OneFormer + DA3 (GPU)
-│   ├── stage3_postprocess.py       # 语义图后处理
-│   ├── stage4_intelligent_fmb.py   # 智能 FMB 分层
-│   ├── stage4_depth_layering.py    # 深度分层 (备选)
-│   ├── stage5_openness.py          # 开放度计算
-│   ├── stage6_generate_images.py   # 生成分析图
-│   ├── stage7_save_outputs.py      # 保存输出
-│   └── gpu_utils.py                # GPU 工具函数
-├── Semantic_configuration.json     # 语义类配置
-├── requirements.txt                # Python 依赖
-└── output/                         # 默认输出目录
+│   ├── stage3_postprocess.py       # semantic map cleanup
+│   ├── stage4_intelligent_fmb.py   # smart FMB layering
+│   ├── stage4_depth_layering.py    # depth layering (fallback)
+│   ├── stage5_openness.py          # openness computation
+│   ├── stage6_generate_images.py   # render analysis images
+│   ├── stage7_save_outputs.py      # save to disk
+│   └── gpu_utils.py                # GPU helpers
+├── Semantic_configuration.json     # class definitions
+├── requirements.txt                # Python deps
+└── output/                         # default output dir
 ```
