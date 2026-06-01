@@ -11,8 +11,11 @@ Requires an NVIDIA GPU and the [NVIDIA Container Toolkit](https://docs.nvidia.co
 ```bash
 git clone https://github.com/ZhenGtai123/AI_City_View.git
 cd AI_City_View
-docker compose up -d
+./start.sh                  # macOS / Linux
+.\start.ps1                 # Windows PowerShell
 ```
+
+The wrapper script brings the container up and prints the URLs to open. Without the script the equivalent is `docker compose up -d` (or just `docker compose up` to keep logs in the foreground).
 
 Open **http://localhost:8000/docs** for the interactive API console, or `curl http://localhost:8000/health` to verify.
 
@@ -20,7 +23,7 @@ Open **http://localhost:8000/docs** for the interactive API console, or `curl ht
 - First request: ~2 min extra (downloads OneFormer ~1.2 GB + DA3 ~1.4 GB into the `hf_cache` volume; cached after that).
 - Switch depth model: `VISION_DEPTH_MODEL=DA3NESTED-GIANT-LARGE-1.1 docker compose up -d`.
 
-To wire this into SceneRx, open the SceneRx Settings page and set `VISION_API_URL=http://127.0.0.1:8000` (or `http://host.docker.internal:8000` when both stacks run on the same Docker host).
+To wire this into SceneRx, **no configuration is required when both stacks run on the same host** — SceneRx's default `VISION_API_URL=http://host.docker.internal:8000` already points here. Only override (in SceneRx's Settings page) when this API is on a different machine.
 
 ---
 
