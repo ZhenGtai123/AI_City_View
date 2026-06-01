@@ -4,26 +4,32 @@ Urban street-view panorama analysis API. Feed it a single panorama, it auto-crop
 
 Exposed via FastAPI as an HTTP service so [SceneRx](../greensvc) and other platforms can call it.
 
-## Quickstart (Docker)
+## Quickstart
 
-Requires an NVIDIA GPU and the [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html).
+Requires an NVIDIA GPU + [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html).
 
 ```bash
 git clone https://github.com/ZhenGtai123/AI_City_View.git
 cd AI_City_View
-./start.sh                  # macOS / Linux
-.\start.ps1                 # Windows PowerShell
+docker compose up
 ```
 
-The wrapper script brings the container up and prints the URLs to open. Without the script the equivalent is `docker compose up -d` (or just `docker compose up` to keep logs in the foreground).
+Then open → **http://localhost:8000/docs**
 
-Open **http://localhost:8000/docs** for the interactive API console, or `curl http://localhost:8000/health` to verify.
+That's it. First build ~10 min (PyTorch + DA3 + xformers); first request another ~2 min downloading model weights into the `hf_cache` volume; cached after that.
 
-- First build: ~10 min (installs PyTorch CUDA + Depth Anything + xformers).
-- First request: ~2 min extra (downloads OneFormer ~1.2 GB + DA3 ~1.4 GB into the `hf_cache` volume; cached after that).
-- Switch depth model: `VISION_DEPTH_MODEL=DA3NESTED-GIANT-LARGE-1.1 docker compose up -d`.
+Pairs with [SceneRx](../greensvc) out of the box on the same host — SceneRx's default `VISION_API_URL=http://host.docker.internal:8000` already points here.
 
-To wire this into SceneRx, **no configuration is required when both stacks run on the same host** — SceneRx's default `VISION_API_URL=http://host.docker.internal:8000` already points here. Only override (in SceneRx's Settings page) when this API is on a different machine.
+<details>
+<summary>Alternative startup commands</summary>
+
+```bash
+./start.sh        # macOS / Linux wrapper — also echoes URLs
+.\start.ps1       # Windows PowerShell wrapper
+docker compose up -d                                          # detached (no live logs)
+VISION_DEPTH_MODEL=DA3NESTED-GIANT-LARGE-1.1 docker compose up    # 1.4B-param depth model (needs ~16 GB VRAM)
+```
+</details>
 
 ---
 
